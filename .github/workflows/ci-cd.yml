@@ -1,0 +1,99 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  SOLUTION_PATH: Moongazing.OrionCache.sln
+  AOT_SMOKE_PATH: tests/Moongazing.OrionCache.AotSmoke/Moongazing.OrionCache.AotSmoke.csproj
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dotnet-version: ['8.0.x', '9.0.x', '10.0.x']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET ${{ matrix.dotnet-version }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.dotnet-version }}
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+      - name: Build
+        run: dotnet build ${{ env.SOLUTION_PATH }} --no-restore --configuration Release
+      - name: Test
+        run: dotnet test ${{ env.SOLUTION_PATH }} --no-restore --configuration Release --verbosity normal
+
+  aot-smoke:
+    # OrionCache's AOT exit criterion: a NativeAOT publish with zero trim/AOT warnings that exercises
+    # the cache-aside path over a real IMemoryCache, and a native binary that exits 0.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish NativeAOT
+        run: |
+          dotnet publish ${{ env.AOT_SMOKE_PATH }} \
+            --configuration Release \
+            --runtime linux-x64 \
+            --output ./aot-smoke \
+            -warnaserror
+      - name: Run the native binary
+        run: ./aot-smoke/Moongazing.OrionCache.AotSmoke
+
+  publish:
+    needs: [build-and-test, aot-smoke]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_PATH }}
+      - name: Build
+        run: dotnet build ${{ env.SOLUTION_PATH }} --no-restore --configuration Release
+      - name: Pack
+        # Packs the solution rather than an enumerated list of projects. Every non-shipping
+        # project (tests) sets IsPackable=false, so this produces exactly the src/ packages -
+        # a newly added sub-package ships automatically instead of being silently left out.
+        run: dotnet pack ${{ env.SOLUTION_PATH }} --no-build --configuration Release -o ./nupkgs
+      - name: Verify every packable project produced a package
+        run: |
+          expected=$(find src -name '*.csproj' -exec grep -L '<IsPackable>false' {} + | wc -l)
+          actual=$(find ./nupkgs -name '*.nupkg' -not -name '*.symbols.nupkg' | wc -l)
+          echo "Packable src projects: $expected"
+          echo "Packages produced:     $actual"
+          find ./nupkgs -name '*.nupkg' -printf '  %f\n' | sort
+          if [ "$expected" -ne "$actual" ]; then
+            echo "::error::Expected $expected packages but produced $actual. Refusing to publish a partial set."
+            exit 1
+          fi
+      - name: Push to NuGet.org
+        run: dotnet nuget push "./nupkgs/*.nupkg" --api-key "${{ secrets.NUGET }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+      - name: Push to GitHub Packages
+        continue-on-error: true
+        run: |
+          dotnet nuget add source --username ${{ github.repository_owner }} --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          dotnet nuget push "./nupkgs/*.nupkg" --source github --skip-duplicate
