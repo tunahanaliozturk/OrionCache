@@ -17,7 +17,10 @@ public interface IOrionCache
     /// <summary>
     /// Return the cached value for <paramref name="key"/>, or run <paramref name="factory"/> to
     /// produce and cache it. Under concurrent misses for the same key the factory runs once; the
-    /// other callers await its result.
+    /// other callers await its result. If that run throws, every one of them sees the exception,
+    /// nothing is cached, and the next caller retries. If it is cancelled by the token of its own
+    /// caller, the callers still waiting elect a new one rather than inheriting a cancellation they
+    /// never asked for.
     /// </summary>
     /// <typeparam name="T">The cached value type.</typeparam>
     /// <param name="key">The cache key.</param>
