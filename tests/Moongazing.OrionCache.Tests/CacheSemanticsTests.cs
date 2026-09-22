@@ -63,4 +63,15 @@ public sealed class CacheSemanticsTests
             () => cache.GetOrCreateAsync("k", _ => Task.FromResult(1), new CacheEntryOptions { Expiration = ttl }));
         Assert.Throws<ArgumentOutOfRangeException>(() => new OrionCacheOptions { DefaultExpiration = ttl }.Validate());
     }
+
+    [Fact]
+    public async Task A_read_for_the_wrong_type_is_a_miss_not_a_cast_crash()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        await cache.SetAsync("k", "text");
+
+        Assert.True((await cache.TryGetAsync<int>("k")).IsNone);
+        Assert.Equal(7, await cache.GetOrCreateAsync("k", _ => Task.FromResult(7)));
+    }
 }

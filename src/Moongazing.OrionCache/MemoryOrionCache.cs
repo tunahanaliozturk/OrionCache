@@ -166,6 +166,18 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             return false;
         }
 
+        if (item.Value is null)
+        {
+            if (default(T) is not null)
+            {
+                return false; // a null entry is not a value of a non-nullable value type
+            }
+        }
+        else if (item.Value is not T)
+        {
+            return false; // written under another type: a miss, not an InvalidCastException
+        }
+
         if (item.Sliding is { } sliding)
         {
             var extended = now + sliding;
