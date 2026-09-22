@@ -160,7 +160,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
 
         var now = clock.UtcNow;
-        if (now >= item.ExpiresAtUtc)
+        if (now.UtcTicks >= item.ExpiresAtUtcTicks)
         {
             cache.Remove(key); // logically expired; drop it and report a miss
             return false;
@@ -181,7 +181,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         if (item.Sliding is { } sliding)
         {
             var extended = now + sliding;
-            item.ExpiresAtUtc = item.HardExpiresAtUtc is { } cap && extended > cap ? cap : extended;
+            item.ExpiresAtUtcTicks = item.HardExpiresAtUtc is { } cap && extended > cap ? cap.UtcTicks : extended.UtcTicks;
         }
 
         value = (T)item.Value!;
@@ -211,7 +211,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             backstop = ttl;
         }
 
-        var item = new CacheItem { Value = value, ExpiresAtUtc = expiresAt, Sliding = sliding, HardExpiresAtUtc = hardCap };
+        var item = new CacheItem { Value = value, Sliding = sliding, HardExpiresAtUtc = hardCap };
+        item.ExpiresAtUtcTicks = expiresAt.UtcTicks;
 
         // Real-time backstop so entries still evict under a real clock in production; the logical
         // OrionClock check on read is authoritative (a fake clock never returns a stale hit).
@@ -231,9 +232,19 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
 
     private sealed class CacheItem
     {
+        private long expiresAtUtcTicks;
+
         public object? Value { get; init; }
 
-        public DateTimeOffset ExpiresAtUtc { get; set; }
+        /// <summary>
+        /// The logical expiry instant in UTC ticks. Every concurrent reader of a sliding entry writes
+        /// this field, so it is read and written atomically rather than as a multi-word struct.
+        /// </summary>
+        public long ExpiresAtUtcTicks
+        {
+            get => Interlocked.Read(ref expiresAtUtcTicks);
+            set => Interlocked.Exchange(ref expiresAtUtcTicks, value);
+        }
 
         public TimeSpan? Sliding { get; init; }
 
