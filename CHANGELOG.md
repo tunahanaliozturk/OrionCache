@@ -6,6 +6,44 @@ All notable changes to OrionCache are documented in this file. The format is bas
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Single-flight is now per key, not per lock stripe.** `GetOrCreateAsync` held one of 256 striped
+  semaphores across the whole factory await, so an unrelated key that shared a stripe blocked for the
+  full duration of another factory, and waiters were only allowed to re-read the cache rather than
+  served the result of the run they waited for. When the factory threw there was nothing to re-read
+  and every waiter ran the factory in turn: 50 concurrent callers made 50 calls to a backing store
+  that had just failed. Each key now has one in-flight registration; the other callers await that one
+  run and receive its value or its exception, and the registration is removed on every exit path.
+- **A cancelled winner no longer cancels the callers still waiting.** They elect a new winner instead
+  of inheriting an `OperationCanceledException` for a token they never passed.
+- **`SetAsync` / `RemoveAsync` are no longer undone by a factory already in flight.** An invalidation
+  issued during a slow factory was silently overwritten when that factory completed, so a removed key
+  came back with no way for the caller to tell. The invalidation now marks the flight and the produced
+  value is not written over the newer one. (A factory already inside its write can still win that
+  race; closing it fully needs per-key versioning.)
+- **A key read under the wrong type is a miss, not a crash.** `TryGetAsync<int>` on a key stored as a
+  string threw `InvalidCastException` out of a method whose contract is that it does not. It now
+  behaves like `IMemoryCache.TryGetValue<T>` and reports a miss.
+- **`orion.cache.factory_runs` counts factory invocations that throw.** It was recorded only after a
+  successful write, so a failing backing store showed as rising misses against a flat factory-run
+  count - the shape of a cache serving everything from memory, while in truth every miss was reaching
+  a store in trouble.
+- **The slid expiry instant is written atomically.** Concurrent readers of a sliding entry all wrote
+  the same multi-word `DateTimeOffset` field with no synchronisation; it is now UTC ticks behind
+  `Interlocked`.
+
+### Changed
+
+- `OrionCacheOptions.StampedeStripeCount` is now the concurrency level of the in-flight table rather
+  than a count of lock stripes. Single-flight is per key at any setting, so unrelated keys never wait
+  on each other.
+- Concurrent callers of a failing `GetOrCreateAsync` now observe the exception of the single factory
+  run instead of each running the factory and observing their own. **Breaking** for anyone who relied
+  on every caller retrying.
+
 ## [0.1.0] - 2026-07-29
 
 The first release — the Orion family's Wave 1 cache-aside foundation: single-flight and
