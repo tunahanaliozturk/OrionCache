@@ -77,7 +77,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
 
         if (!stampedeEnabled)
         {
-            return await ProduceAsync(key, factory, options, stampedeWait: false, cancellationToken).ConfigureAwait(false);
+            return await ProduceAsync(key, factory, options, cancellationToken).ConfigureAwait(false);
         }
 
         var gate = StripeFor(key);
@@ -91,7 +91,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
                 diagnostics.RecordStampedeWait();
                 return afterWait;
             }
-            return await ProduceAsync(key, factory, options, stampedeWait: false, cancellationToken).ConfigureAwait(false);
+            return await ProduceAsync(key, factory, options, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -138,16 +138,12 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
     }
 
-    private async Task<T> ProduceAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options, bool stampedeWait, CancellationToken cancellationToken)
+    private async Task<T> ProduceAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options, CancellationToken cancellationToken)
     {
         diagnostics.RecordMiss();
+        diagnostics.RecordFactoryRun(); // the invocation, not its outcome: a factory that throws still hit the backing store
         var value = await factory(cancellationToken).ConfigureAwait(false);
         SetInternal(key, value, options);
-        diagnostics.RecordFactoryRun();
-        if (stampedeWait)
-        {
-            diagnostics.RecordStampedeWait();
-        }
         return value;
     }
 

@@ -1,6 +1,8 @@
 namespace Moongazing.OrionCache.Tests;
 
 using System;
+using System.Collections.Concurrent;
+using System.Diagnostics.Metrics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -39,4 +41,30 @@ internal static class TestCache
         }
         Assert.True(condition(), because);
     }
+}
+
+/// <summary>Captures every counter measurement emitted by one <see cref="CacheDiagnostics"/> instance.</summary>
+internal sealed class CounterProbe : IDisposable
+{
+    private readonly MeterListener listener = new();
+    private readonly ConcurrentDictionary<string, long> totals = new(StringComparer.Ordinal);
+
+    public CounterProbe(CacheDiagnostics diagnostics)
+    {
+        var meter = diagnostics.Meter;
+        listener.InstrumentPublished = (instrument, l) =>
+        {
+            if (ReferenceEquals(instrument.Meter, meter))
+            {
+                l.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((instrument, measurement, _, _) =>
+            totals.AddOrUpdate(instrument.Name, measurement, (_, running) => running + measurement));
+        listener.Start();
+    }
+
+    public long this[Counter<long> counter] => totals.TryGetValue(counter.Name, out var value) ? value : 0;
+
+    public void Dispose() => listener.Dispose();
 }

@@ -1,8 +1,11 @@
 namespace Moongazing.OrionCache.Tests;
 
 using System;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
+using Moongazing.OrionCache.Diagnostics;
 using Moongazing.OrionClock.Testing;
 
 using Xunit;
@@ -73,5 +76,52 @@ public sealed class CacheSemanticsTests
 
         Assert.True((await cache.TryGetAsync<int>("k")).IsNone);
         Assert.Equal(7, await cache.GetOrCreateAsync("k", _ => Task.FromResult(7)));
+    }
+
+    [Fact]
+    public async Task A_stampede_reports_one_factory_run_and_a_wait_for_every_saved_caller()
+    {
+        var clock = new FakeOrionClock();
+        using var diagnostics = new CacheDiagnostics();
+        using var probe = new CounterProbe(diagnostics);
+        using var cache = TestCache.Create(clock, diagnostics: diagnostics);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = 0;
+
+        var tasks = Enumerable.Range(0, 50).Select(_ => Task.Run(async () =>
+        {
+            Interlocked.Increment(ref started);
+            return await cache.GetOrCreateAsync("k", async _ =>
+            {
+                await release.Task.ConfigureAwait(false);
+                return 1;
+            }).ConfigureAwait(false);
+        })).ToArray();
+
+        await TestCache.WaitFor(() => Volatile.Read(ref started) == 50, "all 50 callers entered the cache");
+        release.SetResult();
+        await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, probe[diagnostics.FactoryRuns]);
+        Assert.Equal(50, probe[diagnostics.Hits] + probe[diagnostics.Misses]); // every call recorded once
+        // How the other 49 split between "joined the flight" and "arrived after it landed" depends on
+        // arrival order, so bound it rather than pin a number that load would move.
+        Assert.InRange(probe[diagnostics.StampedeWaits], 1, 49);
+    }
+
+    [Fact]
+    public async Task A_failing_factory_still_reports_the_run_it_made()
+    {
+        var clock = new FakeOrionClock();
+        using var diagnostics = new CacheDiagnostics();
+        using var probe = new CounterProbe(diagnostics);
+        using var cache = TestCache.Create(clock, diagnostics: diagnostics);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => cache.GetOrCreateAsync<int>("k", _ => throw new InvalidOperationException("nope")));
+
+        Assert.Equal(1, probe[diagnostics.Misses]);
+        Assert.Equal(0, probe[diagnostics.Hits]);
+        Assert.Equal(1, probe[diagnostics.FactoryRuns]);
     }
 }
