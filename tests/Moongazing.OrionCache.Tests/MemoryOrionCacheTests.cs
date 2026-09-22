@@ -48,26 +48,33 @@ public sealed class MemoryOrionCacheTests
         var clock = new FakeOrionClock();
         using var cache = Create(clock);
         var calls = 0;
-        var release = new TaskCompletionSource();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        // A distinct value per invocation: "everyone got the winner's value" is only an assertion if a
+        // second run would have produced a different one.
         async Task<int> Factory(CancellationToken ct)
         {
-            Interlocked.Increment(ref calls);
-            await release.Task.ConfigureAwait(false); // hold the winner so all others pile up on the stripe
-            return 7;
+            var mine = Interlocked.Increment(ref calls);
+            await release.Task.ConfigureAwait(false); // hold the winner so all others pile up behind it
+            return mine;
         }
 
+        var started = 0;
         var tasks = Enumerable.Range(0, 1000)
-            .Select(_ => Task.Run(() => cache.GetOrCreateAsync("hot", Factory)))
+            .Select(_ => Task.Run(async () =>
+            {
+                Interlocked.Increment(ref started);
+                return await cache.GetOrCreateAsync("hot", Factory).ConfigureAwait(false);
+            }))
             .ToArray();
 
-        // Give the callers time to contend, then let the single in-flight factory complete.
-        await Task.Delay(50);
+        // Wait for every caller to be inside the cache — not a fixed sleep — then let the winner finish.
+        await TestCache.WaitFor(() => Volatile.Read(ref started) == 1000, "all 1000 callers entered the cache");
         release.SetResult();
         var results = await Task.WhenAll(tasks);
 
         Assert.Equal(1, calls);                       // factory ran exactly once
-        Assert.All(results, r => Assert.Equal(7, r)); // everyone got the winner's value
+        Assert.All(results, r => Assert.Equal(1, r)); // everyone got that one run's value
     }
 
     [Fact]
@@ -141,20 +148,23 @@ public sealed class MemoryOrionCacheTests
         var clock = new FakeOrionClock();
         using var cache = Create(clock, o => o.EnableStampedeProtection = false);
         var calls = 0;
-        var release = new TaskCompletionSource();
+        var inFactory = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         async Task<int> Factory(CancellationToken ct)
         {
             Interlocked.Increment(ref calls);
+            Interlocked.Increment(ref inFactory);
             await release.Task.ConfigureAwait(false);
             return 1;
         }
 
         var tasks = Enumerable.Range(0, 20).Select(_ => Task.Run(() => cache.GetOrCreateAsync("k", Factory))).ToArray();
-        await Task.Delay(50);
+        // Wait for all 20 to be inside the factory at once, rather than sleeping and hoping.
+        await TestCache.WaitFor(() => Volatile.Read(ref inFactory) == 20, "all 20 callers ran the factory concurrently");
         release.SetResult();
         await Task.WhenAll(tasks);
 
-        Assert.True(calls > 1); // no single-flight -> multiple factory runs
+        Assert.Equal(20, calls); // no single-flight -> one factory run per caller
     }
 }
