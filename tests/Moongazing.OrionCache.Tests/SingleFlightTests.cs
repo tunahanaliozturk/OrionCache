@@ -175,6 +175,54 @@ public sealed class SingleFlightTests
     }
 
     [Fact]
+    public async Task Remove_during_an_in_flight_factory_is_not_resurrected()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var producing = Task.Run(() => cache.GetOrCreateAsync("k", async _ =>
+        {
+            started.SetResult();
+            await release.Task.ConfigureAwait(false);
+            return 2;
+        }));
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await cache.RemoveAsync("k");
+        release.SetResult();
+
+        Assert.Equal(2, await producing.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.True((await cache.TryGetAsync<int>("k")).IsNone, "a key removed mid-flight was resurrected by the in-flight factory");
+    }
+
+    [Fact]
+    public async Task Set_during_an_in_flight_factory_is_not_overwritten_by_it()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var producing = Task.Run(() => cache.GetOrCreateAsync("k", async _ =>
+        {
+            started.SetResult();
+            await release.Task.ConfigureAwait(false);
+            return 2;
+        }));
+
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await cache.SetAsync("k", 99);
+        release.SetResult();
+        await producing.WaitAsync(TimeSpan.FromSeconds(30));
+
+        var stored = await cache.TryGetAsync<int>("k");
+        Assert.True(stored.IsSome);
+        Assert.Equal(99, stored.Value);
+    }
+
+    [Fact]
     public async Task The_in_flight_table_empties_after_success_failure_and_cancellation()
     {
         var clock = new FakeOrionClock();
