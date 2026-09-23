@@ -47,6 +47,8 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Changed
 
+- Single-flight waiters no longer allocate an unused `Flight<T>` and task-completion source before
+  discovering an owner already registered for the key. Only the owner creates the flight.
 - Updated Microsoft.Extensions cache/DI/options references to 10.0.12 while retaining net8.0,
   net9.0, and net10.0 targets. Test SDK, xUnit, and its runner use current stable releases.
 - Concurrent `GetOrCreateAsync` calls for the same key with different result types now throw

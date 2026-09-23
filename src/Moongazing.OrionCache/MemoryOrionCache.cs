@@ -98,13 +98,18 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var mine = new Flight<T>();
             Flight claimed;
+            Flight<T>? mine = null;
             lock (MutationGate(key))
             {
-                claimed = flights.GetOrAdd(key, mine);
+                if (!flights.TryGetValue(key, out claimed!))
+                {
+                    mine = new Flight<T>();
+                    flights[key] = mine;
+                    claimed = mine;
+                }
             }
-            if (ReferenceEquals(claimed, mine))
+            if (mine is not null)
             {
                 return await RunFlightAsync(key, factory, options, mine, cancellationToken).ConfigureAwait(false);
             }
