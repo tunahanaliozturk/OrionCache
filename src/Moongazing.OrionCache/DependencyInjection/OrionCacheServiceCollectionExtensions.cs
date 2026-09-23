@@ -39,6 +39,9 @@ public static class OrionCacheServiceCollectionExtensions
 
         services.TryAddSingleton<CacheDiagnostics>();
         services.TryAddSingleton<IOrionCache, MemoryOrionCache>();
+        services.TryAddSingleton<ITaggedOrionCache>(static provider =>
+            provider.GetRequiredService<IOrionCache>() as ITaggedOrionCache
+            ?? throw new InvalidOperationException("The registered IOrionCache does not implement ITaggedOrionCache."));
 
         return services;
     }

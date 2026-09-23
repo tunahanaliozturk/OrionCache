@@ -8,6 +8,14 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ## [Unreleased]
 
+### Added
+
+- **In-memory tag invalidation.** Entries can carry up to 32 case-sensitive tags through
+  `CacheEntryOptions.Tags`; resolve `ITaggedOrionCache` to call `InvalidateTagAsync`. A tag
+  invalidation expires matching entries, including entries whose factories started before the
+  invalidation, without affecting unrelated keys or replacement entries. Tags are local to one
+  cache instance; cross-instance invalidation awaits a distributed backplane.
+
 ### Fixed
 
 - **A completed explicit write is no longer overwritten by a factory already entering its final

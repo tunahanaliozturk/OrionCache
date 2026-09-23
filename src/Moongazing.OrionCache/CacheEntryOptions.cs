@@ -1,12 +1,13 @@
 namespace Moongazing.OrionCache;
 
 using System;
+using System.Collections.Generic;
 
 /// <summary>
 /// Per-entry cache options: how long a value lives. Absolute <see cref="Expiration"/> caps total
 /// lifetime; <see cref="SlidingExpiration"/> (optional) extends the life on each hit but never past a
 /// set absolute cap. All expiry is measured on the family clock, so it is deterministic in tests.
-/// (Tag-based invalidation options arrive in a later wave.)
+/// Entries may also be grouped for invalidation using <see cref="Tags"/>.
 /// </summary>
 public sealed class CacheEntryOptions
 {
@@ -19,6 +20,12 @@ public sealed class CacheEntryOptions
     /// </summary>
     public TimeSpan? SlidingExpiration { get; set; }
 
+    /// <summary>
+    /// Optional case-sensitive invalidation tags. An entry can specify up to 32 tag values.
+    /// A tag invalidation expires the entry even when its TTL has not elapsed.
+    /// </summary>
+    public IReadOnlyCollection<string>? Tags { get; set; }
+
     internal void Validate()
     {
         if (Expiration is { } e && e <= TimeSpan.Zero)
@@ -28,6 +35,17 @@ public sealed class CacheEntryOptions
         if (SlidingExpiration is { } s && s <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(SlidingExpiration), s, "SlidingExpiration must be positive.");
+        }
+        if (Tags is { Count: > 32 })
+        {
+            throw new ArgumentOutOfRangeException(nameof(Tags), "An entry can have at most 32 tags.");
+        }
+        if (Tags is { } tags)
+        {
+            foreach (var tag in tags)
+            {
+                ArgumentException.ThrowIfNullOrEmpty(tag);
+            }
         }
     }
 }

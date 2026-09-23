@@ -15,6 +15,7 @@ Every service re-implements the same three-line cache-aside and gets it wrong th
 
 - **Single-flight `GetOrCreateAsync`** — under concurrent misses for one key the factory runs once; the losers await the winner's result. (Verified by a test firing 1,000 parallel calls on a cold key and asserting the factory ran exactly once.)
 - **Deterministic expiration on `OrionClock`** — absolute and sliding TTLs are measured on the family clock, so a `FakeOrionClock` expires entries with no real waiting and no flakiness. A stale value is never returned.
+- **Tag invalidation** — group related in-memory entries and expire them together, including entries whose factory was in flight during the invalidation.
 - **`Option<T>` reads** — `TryGetAsync` returns an `Option<T>` from [OrionResult](https://github.com/tunahanaliozturk/OrionResult), not the `(bool, out T)` dance.
 - **OpenTelemetry by default** — a `Moongazing.OrionCache` meter with `orion.cache.hits`, `orion.cache.misses`, `orion.cache.factory_runs`, and `orion.cache.stampede_waits`.
 - **AOT- and trim-clean**, verified by a native-binary smoke test in CI. Multi-targets `net8.0`, `net9.0`, `net10.0`.
@@ -48,6 +49,20 @@ public sealed class ProductService(IOrionCache cache, AppDb db)
 }
 ```
 
+## Tag invalidation
+
+```csharp
+var cache = services.GetRequiredService<ITaggedOrionCache>();
+await cache.SetAsync("product:42", product,
+    new CacheEntryOptions { Tags = ["catalog", "product:42"] });
+await cache.InvalidateTagAsync("product:42");
+```
+
+Tag names are case-sensitive; each entry accepts up to 32 tag values. Invalidation affects only
+the current cache instance, not other application instances. A factory already in flight may return
+its value to its current caller, but its invalidated tagged result will not be served from the cache.
+An existing cached value is not retroactively assigned tags by a later `GetOrCreateAsync` call.
+
 ## Testing — expiration fast-forwards, no real waits
 
 Because TTLs are measured on `OrionClock`, a `FakeOrionClock` advances a whole expiration window instantly and deterministically:
@@ -70,7 +85,7 @@ Assert.Equal(2, calls);
 
 ## Roadmap
 
-This is the **Wave 1** foundation (v0.1): the in-memory cache-aside core with single-flight and OrionClock-driven expiration. Later waves add a Redis L2 with single-flight escalated to an [OrionLock](https://github.com/tunahanaliozturk/OrionLock) lease (once per key *across instances*) and tag-based invalidation (`InvalidateTagAsync` — `product:42` drops the entry and every list tagged with it), factory failures wrapped through [OrionResilience](https://github.com/tunahanaliozturk/OrionResilience) (W2), an ASP.NET output-caching provider (W3), and a coherent L1+L2 two-tier cache with backplane invalidation (W4 GA). See [CHANGELOG.md](CHANGELOG.md).
+The in-memory cache-aside core now includes single-flight, OrionClock-driven expiration, and local tag invalidation. Later waves add a Redis L2 with single-flight escalated to an [OrionLock](https://github.com/tunahanaliozturk/OrionLock) lease (once per key *across instances*), factory failures wrapped through [OrionResilience](https://github.com/tunahanaliozturk/OrionResilience), an ASP.NET output-caching provider, and a coherent L1+L2 two-tier cache with backplane invalidation. See [CHANGELOG.md](CHANGELOG.md).
 
 OrionCache orchestrates over memory/Redis; it does not reimplement Redis, does no implicit query-result caching (cache-aside is explicit by design), and is not a session store. Serialization (when the Redis L2 arrives) is `System.Text.Json` source-gen only.
 

@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <PackageId>OrionCache</PackageId>
-    <Description>Cache-aside done right for the Orion family: one GetOrCreateAsync that never stampedes (single-flight per key), with expiration driven by an OrionClock TimeProvider so it is deterministic in tests, and an Option-returning TryGetAsync from OrionResult. OpenTelemetry by default, AOT-clean. Wave 1 is the in-memory core; a Redis L2 and tag invalidation land in later waves.</Description>
+    <Description>Cache-aside with per-key single-flight, OrionClock-driven expiration, case-sensitive tag invalidation, Option-returning reads, and OpenTelemetry. AOT-clean in-memory core; Redis L2 is planned.</Description>
     <PackageTags>orion;cache;cache-aside;stampede;single-flight;memory;getorcreate;dotnet</PackageTags>
     <RootNamespace>Moongazing.OrionCache</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
@@ -13,6 +13,7 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Primitives" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Moongazing.OrionCache.Tests" />
