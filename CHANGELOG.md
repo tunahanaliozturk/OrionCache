@@ -8,6 +8,11 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-23
+
+The first stable release of OrionCache's in-memory cache-aside API. Distributed cache and
+cross-instance invalidation are not part of this release.
+
 ### Added
 
 - **In-memory tag invalidation.** Entries can carry up to 32 case-sensitive tags through

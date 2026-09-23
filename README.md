@@ -91,7 +91,11 @@ OrionCache orchestrates over memory/Redis; it does not reimplement Redis, does n
 
 ## Versioning
 
-Follows [Semantic Versioning](https://semver.org/). Multi-targets `net8.0`, `net9.0`, and `net10.0`. Binds to `Orion.Abstractions` 1.x, `OrionClock` 0.9.x, and `OrionResult` 0.9.x.
+Version 1.0.0 stabilizes the in-memory cache-aside API, including single-flight, expiration,
+and local tag invalidation. It does not promise distributed cache consistency. OrionCache follows
+[Semantic Versioning](https://semver.org/) and targets `net8.0`, `net9.0`, and `net10.0`.
+Its current dependencies include `Orion.Abstractions` 1.x, `OrionClock` 0.9.x, and
+`OrionResult` 0.9.x; applications should test dependency upgrades independently.
 
 ## Documentation
 
