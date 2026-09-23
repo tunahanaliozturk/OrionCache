@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Primitives;
 
 using Moongazing.Orion.Abstractions.Time;
 using Moongazing.OrionCache.Diagnostics;
@@ -36,7 +37,7 @@ using Moongazing.OrionResult;
 /// completed mutation; a colliding key may wait briefly for a write, never for a factory await.
 /// </para>
 /// </summary>
-public sealed class MemoryOrionCache : IOrionCache, IDisposable
+public sealed class MemoryOrionCache : ITaggedOrionCache, IDisposable
 {
     private readonly IMemoryCache cache;
     private readonly IOrionClock clock;
@@ -45,6 +46,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     private readonly bool stampedeEnabled;
     private readonly ConcurrentDictionary<string, Flight> flights;
     private readonly object[] mutationGates;
+    private readonly object tagGate = new();
+    private readonly Dictionary<string, WeakReference<TagState>> tagStates = new(StringComparer.Ordinal);
 
     /// <summary>Create the cache.</summary>
     /// <param name="cache">The backing memory cache (storage + pressure eviction).</param>
@@ -153,9 +156,10 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         options?.Validate();
+        var capturedTags = CaptureTags(options?.Tags);
         if (!stampedeEnabled)
         {
-            SetInternal(key, value, options);
+            SetInternal(key, value, options, capturedTags);
         }
         else
         {
@@ -165,7 +169,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
                 {
                     flight.Invalidated = true;
                 }
-                SetInternal(key, value, options);
+                SetInternal(key, value, options, capturedTags);
             }
         }
         return default;
@@ -190,6 +194,30 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
                 cache.Remove(key);
             }
         }
+        return default;
+    }
+
+    /// <inheritdoc />
+    public ValueTask InvalidateTagAsync(string tag, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(tag);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        TagState? old;
+        lock (tagGate)
+        {
+            if (!tagStates.TryGetValue(tag, out var reference) || !reference.TryGetTarget(out old))
+            {
+                tagStates.Remove(tag);
+                return default;
+            }
+
+            // A new writer sees a fresh state. Existing entries and factories retain the old one.
+            tagStates[tag] = new WeakReference<TagState>(new TagState());
+        }
+
+        // Never invoke cache eviction callbacks while holding the registry lock.
+        old.Source.Cancel();
         return default;
     }
 
@@ -237,10 +265,11 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     {
         diagnostics.RecordMiss();
         diagnostics.RecordFactoryRun(); // the invocation, not its outcome: a factory that throws still hit the backing store
+        var capturedTags = CaptureTags(options?.Tags);
         var value = await factory(cancellationToken).ConfigureAwait(false);
         if (flight is null)
         {
-            SetInternal(key, value, options);
+            SetInternal(key, value, options, capturedTags);
         }
         else
         {
@@ -248,7 +277,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             {
                 if (!flight.Invalidated)
                 {
-                    SetInternal(key, value, options);
+                    SetInternal(key, value, options, capturedTags);
                 }
             }
         }
@@ -273,6 +302,17 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             return false;
         }
 
+        if (item.TagStates is { } tagSnapshots)
+        {
+            foreach (var tag in tagSnapshots)
+            {
+                if (tag.Source.IsCancellationRequested)
+                {
+                    return false;
+                }
+            }
+        }
+
         if (item.Value is null)
         {
             if (default(T) is not null)
@@ -295,7 +335,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         return true;
     }
 
-    private void SetInternal<T>(string key, T value, CacheEntryOptions? options)
+    private void SetInternal<T>(string key, T value, CacheEntryOptions? options, TagState[]? capturedTags)
     {
         var now = clock.UtcNow;
         var sliding = options?.SlidingExpiration;
@@ -324,6 +364,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             Sliding = sliding,
             HardExpiresAtUtc = hardCap,
             ExpiresAtUtcTicks = expiresAt.UtcTicks,
+            TagStates = capturedTags,
         };
 
         // Match the backing cache's eviction policy to the logical one. A fixed absolute timeout
@@ -334,7 +375,69 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             SlidingExpiration = sliding,
             AbsoluteExpirationRelativeToNow = absoluteBackstop,
         };
+        if (capturedTags is not null)
+        {
+            foreach (var tag in capturedTags)
+            {
+                entryOptions.AddExpirationToken(new CancellationChangeToken(tag.Source.Token));
+            }
+        }
         cache.Set(key, item, entryOptions);
+    }
+
+    private TagState[]? CaptureTags(IReadOnlyCollection<string>? tags)
+    {
+        if (tags is null || tags.Count == 0)
+        {
+            return null;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var captured = new List<TagState>(tags.Count);
+        foreach (var tag in tags)
+        {
+            ArgumentException.ThrowIfNullOrEmpty(tag);
+            if (seen.Add(tag))
+            {
+                if (seen.Count > 32)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(tags), "An entry can have at most 32 tags.");
+                }
+                captured.Add(GetOrCreateTagState(tag));
+            }
+        }
+        return captured.ToArray();
+    }
+
+    private TagState GetOrCreateTagState(string tag)
+    {
+        lock (tagGate)
+        {
+            if (tagStates.TryGetValue(tag, out var reference) && reference.TryGetTarget(out var existing))
+            {
+                return existing;
+            }
+
+            if (tagStates.Count > 256)
+            {
+                foreach (var pair in tagStates)
+                {
+                    if (!pair.Value.TryGetTarget(out _))
+                    {
+                        tagStates.Remove(pair.Key);
+                    }
+                }
+            }
+
+            var created = new TagState();
+            tagStates[tag] = new WeakReference<TagState>(created);
+            return created;
+        }
+    }
+
+    private sealed class TagState
+    {
+        public CancellationTokenSource Source { get; } = new();
     }
 
     /// <summary>One in-flight factory. The non-generic base carries what callers of any type need.</summary>
@@ -368,5 +471,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         public TimeSpan? Sliding { get; init; }
 
         public DateTimeOffset? HardExpiresAtUtc { get; init; }
+
+        public TagState[]? TagStates { get; init; }
     }
 }
