@@ -10,9 +10,9 @@
     <PackageReference Include="Orion.Abstractions" Version="1.2.0" />
     <PackageReference Include="OrionClock" Version="0.9.0" />
     <PackageReference Include="OrionResult" Version="0.9.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Options" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Moongazing.OrionCache.Tests" />
