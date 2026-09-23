@@ -114,7 +114,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
                 diagnostics.RecordStampedeWait();
                 return value;
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && winner.Completion.Task.IsCanceled)
             {
                 // The winning caller walked away. We still want the value: claim a fresh flight.
             }
@@ -172,7 +172,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             flight.Completion.TrySetResult(value);
             return value;
         }
-        catch (OperationCanceledException canceled)
+        catch (OperationCanceledException canceled) when (cancellationToken.IsCancellationRequested && canceled.CancellationToken == cancellationToken)
         {
             // Cancelled by the token of this caller; anyone still waiting elects a new winner.
             flight.Completion.TrySetCanceled(canceled.CancellationToken);

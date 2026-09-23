@@ -59,17 +59,11 @@ public sealed class MemoryOrionCacheTests
             return mine;
         }
 
-        var started = 0;
         var tasks = Enumerable.Range(0, 1000)
-            .Select(_ => Task.Run(async () =>
-            {
-                Interlocked.Increment(ref started);
-                return await cache.GetOrCreateAsync("hot", Factory).ConfigureAwait(false);
-            }))
+            .Select(_ => cache.GetOrCreateAsync("hot", Factory))
             .ToArray();
 
-        // Wait for every caller to be inside the cache — not a fixed sleep — then let the winner finish.
-        await TestCache.WaitFor(() => Volatile.Read(ref started) == 1000, "all 1000 callers entered the cache");
+        // Every async call has reached its first incomplete await and joined the same flight.
         release.SetResult();
         var results = await Task.WhenAll(tasks);
 

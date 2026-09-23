@@ -2,7 +2,6 @@ namespace Moongazing.OrionCache.Tests;
 
 using System;
 using System.Linq;
-using System.Threading;
 using System.Threading.Tasks;
 
 using Moongazing.OrionCache.Diagnostics;
@@ -86,27 +85,18 @@ public sealed class CacheSemanticsTests
         using var probe = new CounterProbe(diagnostics);
         using var cache = TestCache.Create(clock, diagnostics: diagnostics);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var started = 0;
-
-        var tasks = Enumerable.Range(0, 50).Select(_ => Task.Run(async () =>
+        var tasks = Enumerable.Range(0, 50).Select(_ => cache.GetOrCreateAsync("k", async _ =>
         {
-            Interlocked.Increment(ref started);
-            return await cache.GetOrCreateAsync("k", async _ =>
-            {
-                await release.Task.ConfigureAwait(false);
-                return 1;
-            }).ConfigureAwait(false);
+            await release.Task.ConfigureAwait(false);
+            return 1;
         })).ToArray();
 
-        await TestCache.WaitFor(() => Volatile.Read(ref started) == 50, "all 50 callers entered the cache");
         release.SetResult();
         await Task.WhenAll(tasks).WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Equal(1, probe[diagnostics.FactoryRuns]);
         Assert.Equal(50, probe[diagnostics.Hits] + probe[diagnostics.Misses]); // every call recorded once
-        // How the other 49 split between "joined the flight" and "arrived after it landed" depends on
-        // arrival order, so bound it rather than pin a number that load would move.
-        Assert.InRange(probe[diagnostics.StampedeWaits], 1, 49);
+        Assert.Equal(49, probe[diagnostics.StampedeWaits]);
     }
 
     [Fact]

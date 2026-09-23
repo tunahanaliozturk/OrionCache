@@ -21,26 +21,19 @@ public sealed class SingleFlightTests
         var clock = new FakeOrionClock();
         using var cache = TestCache.Create(clock);
         var calls = 0;
-        var entered = 0;
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         async Task<int> Boom(CancellationToken ct)
         {
             Interlocked.Increment(ref calls);
-            Interlocked.Increment(ref entered);
             await release.Task.ConfigureAwait(false);
             throw new InvalidOperationException("factory exploded");
         }
 
-        var started = 0;
-        var tasks = Enumerable.Range(0, 50).Select(_ => Task.Run(async () =>
-        {
-            Interlocked.Increment(ref started);
-            return await cache.GetOrCreateAsync("k", Boom).ConfigureAwait(false);
-        })).ToArray();
-
-        await TestCache.WaitFor(() => Volatile.Read(ref started) == 50, "all 50 callers entered the cache");
-        await TestCache.WaitFor(() => Volatile.Read(ref entered) >= 1, "the winning factory started");
+        // Async methods run to their first incomplete await before returning. Constructing the
+        // calls here attaches all 49 waiters to the flight before releasing its factory.
+        var tasks = Enumerable.Range(0, 50).Select(_ => cache.GetOrCreateAsync("k", Boom)).ToArray();
+        Assert.Equal(1, Volatile.Read(ref calls));
         release.SetResult();
 
         foreach (var task in tasks)
@@ -49,6 +42,34 @@ public sealed class SingleFlightTests
         }
 
         Assert.Equal(1, Volatile.Read(ref calls));
+    }
+
+    [Fact]
+    public async Task An_independent_factory_timeout_is_shared_instead_of_retried_by_waiters()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        var calls = 0;
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        async Task<int> Timeout(CancellationToken _)
+        {
+            Interlocked.Increment(ref calls);
+            await release.Task.ConfigureAwait(false);
+            throw new OperationCanceledException("upstream timeout");
+        }
+
+        var tasks = Enumerable.Range(0, 50).Select(_ => cache.GetOrCreateAsync("k", Timeout)).ToArray();
+        Assert.Equal(1, Volatile.Read(ref calls));
+        release.SetResult();
+
+        foreach (var task in tasks)
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => task);
+        }
+
+        Assert.Equal(1, Volatile.Read(ref calls));
+        Assert.Equal(0, cache.InFlightCount);
     }
 
     [Fact]
@@ -127,13 +148,12 @@ public sealed class SingleFlightTests
             return 5;
         }
 
-        var winner = Task.Run(() => cache.GetOrCreateAsync("k", Factory));
+        var winner = cache.GetOrCreateAsync("k", Factory);
         await started.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
         using var quitterCts = new CancellationTokenSource();
-        var quitter = Task.Run(() => cache.GetOrCreateAsync("k", Factory, null, quitterCts.Token));
-        var stayer = Task.Run(() => cache.GetOrCreateAsync("k", Factory));
-        await Task.Delay(50);
+        var quitter = cache.GetOrCreateAsync("k", Factory, null, quitterCts.Token);
+        var stayer = cache.GetOrCreateAsync("k", Factory);
 
         quitterCts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => quitter);
@@ -163,11 +183,10 @@ public sealed class SingleFlightTests
         }
 
         using var winnerCts = new CancellationTokenSource();
-        var winner = Task.Run(() => cache.GetOrCreateAsync("k", Factory, null, winnerCts.Token));
+        var winner = cache.GetOrCreateAsync("k", Factory, null, winnerCts.Token);
         await winnerStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        var stayer = Task.Run(() => cache.GetOrCreateAsync("k", Factory));
-        await Task.Delay(50);
+        var stayer = cache.GetOrCreateAsync("k", Factory);
 
         winnerCts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => winner);
