@@ -20,20 +20,28 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        dotnet-version: ['8.0.x', '9.0.x', '10.0.x']
+        # The matrix leg is the target framework, not the SDK. Selecting the SDK here did not do what
+        # it looked like it did: the runner already has a newer SDK on PATH, so every leg silently
+        # used that one and ran the identical three-framework suite - and the leg labelled 8.0.x
+        # never proved the solution builds on SDK 8 (it does not; the projects target net10.0).
+        framework: ['net8.0', 'net9.0', 'net10.0']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup .NET ${{ matrix.dotnet-version }}
+      - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: ${{ matrix.dotnet-version }}
+          # All three runtimes, so each framework is tested on its own rather than rolled forward.
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
       - name: Restore
         run: dotnet restore ${{ env.SOLUTION_PATH }}
       - name: Build
         run: dotnet build ${{ env.SOLUTION_PATH }} --no-restore --configuration Release
-      - name: Test
-        run: dotnet test ${{ env.SOLUTION_PATH }} --no-restore --configuration Release --verbosity normal
+      - name: Test ${{ matrix.framework }}
+        run: dotnet test ${{ env.SOLUTION_PATH }} --no-restore --configuration Release --framework ${{ matrix.framework }} --verbosity normal
 
   aot-smoke:
     # OrionCache's AOT exit criterion: a NativeAOT publish with zero trim/AOT warnings that exercises

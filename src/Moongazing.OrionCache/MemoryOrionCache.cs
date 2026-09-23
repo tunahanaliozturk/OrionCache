@@ -1,6 +1,8 @@
 namespace Moongazing.OrionCache;
 
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -22,9 +24,17 @@ using Moongazing.OrionResult;
 /// read, so a stale value is never returned.
 /// </para>
 /// <para>
-/// Single-flight uses a fixed set of lock stripes rather than a lock per key, bounding memory while
-/// keeping cross-key contention negligible; the double-check inside the stripe guarantees the factory
-/// runs once per key even when unrelated keys share a stripe.
+/// Single-flight registers one in-flight <i>flight</i> per key. The first caller to claim the key runs
+/// the factory; every other caller for that key awaits that one run and is served its result - so a
+/// failing factory fails them all on one backing-store call instead of one call each, and keys that
+/// are not the same key never wait on each other. The registration is removed on every exit path
+/// (value, exception, cancellation), so the table holds only the keys actually in flight.
+/// </para>
+/// <para>
+/// A <see cref="SetAsync"/> or <see cref="RemoveAsync"/> that lands while a factory is in flight marks
+/// that flight: its callers still get the value it produced, but it is not written over the newer one.
+/// The mark is not a lock - a factory already inside its write can still win that race - but an
+/// invalidation is no longer routinely undone by a factory that started before it.
 /// </para>
 /// </summary>
 public sealed class MemoryOrionCache : IOrionCache, IDisposable
@@ -34,7 +44,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     private readonly CacheDiagnostics diagnostics;
     private readonly TimeSpan defaultExpiration;
     private readonly bool stampedeEnabled;
-    private readonly SemaphoreSlim[] stripes;
+    private readonly ConcurrentDictionary<string, Flight> flights;
 
     /// <summary>Create the cache.</summary>
     /// <param name="cache">The backing memory cache (storage + pressure eviction).</param>
@@ -55,12 +65,11 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         this.diagnostics = diagnostics;
         defaultExpiration = value.DefaultExpiration;
         stampedeEnabled = value.EnableStampedeProtection;
-        stripes = new SemaphoreSlim[value.StampedeStripeCount];
-        for (var i = 0; i < stripes.Length; i++)
-        {
-            stripes[i] = new SemaphoreSlim(1, 1);
-        }
+        flights = new ConcurrentDictionary<string, Flight>(value.StampedeStripeCount, 31, StringComparer.Ordinal);
     }
+
+    /// <summary>The number of factories currently in flight. Test hook: this must fall back to zero.</summary>
+    internal int InFlightCount => flights.Count;
 
     /// <inheritdoc />
     public async Task<T> GetOrCreateAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options = null, CancellationToken cancellationToken = default)
@@ -77,25 +86,38 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
 
         if (!stampedeEnabled)
         {
-            return await ProduceAsync(key, factory, options, stampedeWait: false, cancellationToken).ConfigureAwait(false);
+            return await ProduceAsync(key, factory, options, flight: null, cancellationToken).ConfigureAwait(false);
         }
 
-        var gate = StripeFor(key);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        while (true)
         {
-            // Double-check: the caller that won the stripe may already have populated this key.
-            if (TryGetLive<T>(key, out var afterWait))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var mine = new Flight<T>();
+            var claimed = flights.GetOrAdd(key, mine);
+            if (ReferenceEquals(claimed, mine))
             {
+                return await RunFlightAsync(key, factory, options, mine, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (claimed is not Flight<T> winner)
+            {
+                // The same key is in flight for a different value type, so there is no result to share.
+                // Produce our own rather than casting blind or blocking on an unrelated flight.
+                return await ProduceAsync(key, factory, options, flight: null, cancellationToken).ConfigureAwait(false);
+            }
+
+            try
+            {
+                var value = await winner.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
                 diagnostics.RecordHit();
                 diagnostics.RecordStampedeWait();
-                return afterWait;
+                return value;
             }
-            return await ProduceAsync(key, factory, options, stampedeWait: false, cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            gate.Release();
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && winner.Completion.Task.IsCanceled)
+            {
+                // The winning caller walked away. We still want the value: claim a fresh flight.
+            }
         }
     }
 
@@ -117,6 +139,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         options?.Validate();
+        InvalidateInFlight(key);
         SetInternal(key, value, options);
         return default;
     }
@@ -125,30 +148,66 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     public ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
+        InvalidateInFlight(key);
         cache.Remove(key);
         return default;
     }
 
-    /// <inheritdoc />
-    public void Dispose()
+    /// <summary>Drop the single-flight table. The backing <see cref="IMemoryCache"/> is owned by its provider.</summary>
+    public void Dispose() => flights.Clear();
+
+    private async Task<T> RunFlightAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options, Flight<T> flight, CancellationToken cancellationToken)
     {
-        foreach (var stripe in stripes)
+        try
         {
-            stripe.Dispose();
+            // Double-check: a producer for this key may have finished between our lookup and our claim.
+            if (TryGetLive<T>(key, out var afterClaim))
+            {
+                diagnostics.RecordHit();
+                flight.Completion.TrySetResult(afterClaim);
+                return afterClaim;
+            }
+
+            var value = await ProduceAsync(key, factory, options, flight, cancellationToken).ConfigureAwait(false);
+            flight.Completion.TrySetResult(value);
+            return value;
+        }
+        catch (OperationCanceledException canceled) when (cancellationToken.IsCancellationRequested && canceled.CancellationToken == cancellationToken)
+        {
+            // Cancelled by the token of this caller; anyone still waiting elects a new winner.
+            flight.Completion.TrySetCanceled(canceled.CancellationToken);
+            throw;
+        }
+        catch (Exception failure)
+        {
+            flight.Completion.TrySetException(failure);
+            _ = flight.Completion.Task.Exception; // observed here: having waiters is optional
+            throw;
+        }
+        finally
+        {
+            flights.TryRemove(new KeyValuePair<string, Flight>(key, flight));
         }
     }
 
-    private async Task<T> ProduceAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options, bool stampedeWait, CancellationToken cancellationToken)
+    private async Task<T> ProduceAsync<T>(string key, Func<CancellationToken, Task<T>> factory, CacheEntryOptions? options, Flight? flight, CancellationToken cancellationToken)
     {
         diagnostics.RecordMiss();
+        diagnostics.RecordFactoryRun(); // the invocation, not its outcome: a factory that throws still hit the backing store
         var value = await factory(cancellationToken).ConfigureAwait(false);
-        SetInternal(key, value, options);
-        diagnostics.RecordFactoryRun();
-        if (stampedeWait)
+        if (flight is null || !flight.Invalidated)
         {
-            diagnostics.RecordStampedeWait();
+            SetInternal(key, value, options);
         }
         return value;
+    }
+
+    private void InvalidateInFlight(string key)
+    {
+        if (flights.TryGetValue(key, out var flight))
+        {
+            flight.Invalidated = true;
+        }
     }
 
     private bool TryGetLive<T>(string key, out T value)
@@ -160,16 +219,28 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
 
         var now = clock.UtcNow;
-        if (now >= item.ExpiresAtUtc)
+        if (now.UtcTicks >= item.ExpiresAtUtcTicks)
         {
             cache.Remove(key); // logically expired; drop it and report a miss
             return false;
         }
 
+        if (item.Value is null)
+        {
+            if (default(T) is not null)
+            {
+                return false; // a null entry is not a value of a non-nullable value type
+            }
+        }
+        else if (item.Value is not T)
+        {
+            return false; // written under another type: a miss, not an InvalidCastException
+        }
+
         if (item.Sliding is { } sliding)
         {
             var extended = now + sliding;
-            item.ExpiresAtUtc = item.HardExpiresAtUtc is { } cap && extended > cap ? cap : extended;
+            item.ExpiresAtUtcTicks = item.HardExpiresAtUtc is { } cap && extended > cap ? cap.UtcTicks : extended.UtcTicks;
         }
 
         value = (T)item.Value!;
@@ -199,7 +270,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             backstop = ttl;
         }
 
-        var item = new CacheItem { Value = value, ExpiresAtUtc = expiresAt, Sliding = sliding, HardExpiresAtUtc = hardCap };
+        var item = new CacheItem { Value = value, Sliding = sliding, HardExpiresAtUtc = hardCap };
+        item.ExpiresAtUtcTicks = expiresAt.UtcTicks;
 
         // Real-time backstop so entries still evict under a real clock in production; the logical
         // OrionClock check on read is authoritative (a fake clock never returns a stale hit).
@@ -211,17 +283,39 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         cache.Set(key, item, entryOptions);
     }
 
-    private SemaphoreSlim StripeFor(string key)
+    /// <summary>One in-flight factory. The non-generic base carries what callers of any type need.</summary>
+    private abstract class Flight
     {
-        var index = (int)((uint)StringComparer.Ordinal.GetHashCode(key) % (uint)stripes.Length);
-        return stripes[index];
+        private volatile bool invalidated;
+
+        /// <summary>Set when a Set or Remove landed mid-flight: the produced value must not be written.</summary>
+        public bool Invalidated
+        {
+            get => invalidated;
+            set => invalidated = value;
+        }
+    }
+
+    private sealed class Flight<T> : Flight
+    {
+        public TaskCompletionSource<T> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 
     private sealed class CacheItem
     {
+        private long expiresAtUtcTicks;
+
         public object? Value { get; init; }
 
-        public DateTimeOffset ExpiresAtUtc { get; set; }
+        /// <summary>
+        /// The logical expiry instant in UTC ticks. Every concurrent reader of a sliding entry writes
+        /// this field, so it is read and written atomically rather than as a multi-word struct.
+        /// </summary>
+        public long ExpiresAtUtcTicks
+        {
+            get => Interlocked.Read(ref expiresAtUtcTicks);
+            set => Interlocked.Exchange(ref expiresAtUtcTicks, value);
+        }
 
         public TimeSpan? Sliding { get; init; }
 

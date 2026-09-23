@@ -18,8 +18,9 @@ public sealed class OrionCacheOptions
     public bool EnableStampedeProtection { get; set; } = true;
 
     /// <summary>
-    /// The number of lock stripes used for single-flight. Bounds memory (locks are not per-key) while
-    /// keeping cross-key contention negligible. Must be positive; defaults to 256.
+    /// The concurrency level of the table that tracks in-flight factories - how many threads may claim
+    /// or release a key at once. Single-flight itself is per key: unrelated keys never wait on each
+    /// other whatever this is set to. Must be positive; defaults to 256.
     /// </summary>
     public int StampedeStripeCount { get; set; } = 256;
 

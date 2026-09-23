@@ -8,7 +8,8 @@ using Moongazing.Orion.Abstractions.Diagnostics;
 /// OpenTelemetry instrumentation for the cache. Built on the Orion family's
 /// <see cref="OrionInstrumentation"/> spine: a <see cref="Meter"/> named <c>Moongazing.OrionCache</c>
 /// (subscribe by that name) carrying <c>orion.cache.hits</c>, <c>orion.cache.misses</c>,
-/// <c>orion.cache.factory_runs</c> (values actually produced), and <c>orion.cache.stampede_waits</c>
+/// <c>orion.cache.factory_runs</c> (factory invocations, counted whether they produce a value or
+/// throw - the measure of load reaching the backing store), and <c>orion.cache.stampede_waits</c>
 /// (callers that waited on another's single-flight and were served its result). The recording methods
 /// only touch counters, so instrumentation never throws into the cache path. Multi-tenant /
 /// multi-region labels configured through <see cref="OrionInstrumentation.SetStaticTags"/> are stamped
@@ -40,7 +41,7 @@ public sealed class CacheDiagnostics : OrionInstrumentation
         FactoryRuns = Meter.CreateCounter<long>(
             OrionTelemetry.MetricName("cache", "factory_runs"),
             unit: "{run}",
-            description: "Value-factory invocations (a cold value actually produced).");
+            description: "Value-factory invocations, including the ones that threw.");
 
         StampedeWaits = Meter.CreateCounter<long>(
             OrionTelemetry.MetricName("cache", "stampede_waits"),
@@ -57,7 +58,7 @@ public sealed class CacheDiagnostics : OrionInstrumentation
     /// <summary>Counts lookups not present or expired.</summary>
     public Counter<long> Misses { get; }
 
-    /// <summary>Counts value-factory invocations.</summary>
+    /// <summary>Counts value-factory invocations, successful or not.</summary>
     public Counter<long> FactoryRuns { get; }
 
     /// <summary>Counts callers served by another's single-flight.</summary>
@@ -69,7 +70,7 @@ public sealed class CacheDiagnostics : OrionInstrumentation
     /// <summary>Record a cache miss.</summary>
     public void RecordMiss() => Misses.Add(1, StaticTags);
 
-    /// <summary>Record a value-factory run.</summary>
+    /// <summary>Record a value-factory invocation, before its outcome is known.</summary>
     public void RecordFactoryRun() => FactoryRuns.Add(1, StaticTags);
 
     /// <summary>Record a caller served by another's single-flight.</summary>
