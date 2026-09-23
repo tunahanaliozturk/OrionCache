@@ -5,6 +5,10 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+
+using Moongazing.OrionCache.Diagnostics;
 using Moongazing.OrionClock.Testing;
 
 using Xunit;
@@ -132,6 +136,25 @@ public sealed class SingleFlightTests
     }
 
     [Fact]
+    public async Task Concurrent_factories_for_one_key_cannot_use_different_value_types()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var first = cache.GetOrCreateAsync("k", async _ =>
+        {
+            await release.Task.ConfigureAwait(false);
+            return "text";
+        });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => cache.GetOrCreateAsync("k", _ => Task.FromResult(42)));
+
+        release.SetResult();
+        Assert.Equal("text", await first);
+    }
+
+    [Fact]
     public async Task One_callers_cancellation_does_not_rob_the_others()
     {
         var clock = new FakeOrionClock();
@@ -242,6 +265,33 @@ public sealed class SingleFlightTests
     }
 
     [Fact]
+    public async Task A_completed_set_cannot_be_undone_by_a_factory_already_starting_its_write()
+    {
+        var clock = new FakeOrionClock();
+        using var storage = new InterleavingWriteCache();
+        using var diagnostics = new CacheDiagnostics();
+        using var cache = new MemoryOrionCache(storage, clock, diagnostics, Options.Create(new OrionCacheOptions()));
+        Task? setter = null;
+        storage.BeforeFirstEntry = () =>
+        {
+            using var started = new ManualResetEventSlim();
+            setter = Task.Run(async () =>
+            {
+                started.Set();
+                await cache.SetAsync("k", 99);
+            });
+            Assert.True(started.Wait(TimeSpan.FromSeconds(30)));
+            // Without coordination SetAsync completes here and the producer overwrites it.
+            // With coordination it waits for the producer's write, then replaces that value.
+            _ = setter.Wait(TimeSpan.FromMilliseconds(500));
+        };
+
+        Assert.Equal(2, await cache.GetOrCreateAsync("k", _ => Task.FromResult(2)));
+        await setter!.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(99, (await cache.TryGetAsync<int>("k")).Value);
+    }
+
+    [Fact]
     public async Task The_in_flight_table_empties_after_success_failure_and_cancellation()
     {
         var clock = new FakeOrionClock();
@@ -265,5 +315,28 @@ public sealed class SingleFlightTests
         }
 
         Assert.Equal(0, cache.InFlightCount);
+    }
+
+    private sealed class InterleavingWriteCache : IMemoryCache
+    {
+        private readonly MemoryCache inner = new(new MemoryCacheOptions());
+        private Action? beforeFirstEntry;
+
+        public Action? BeforeFirstEntry
+        {
+            set => beforeFirstEntry = value;
+        }
+
+        public ICacheEntry CreateEntry(object key)
+        {
+            Interlocked.Exchange(ref beforeFirstEntry, null)?.Invoke();
+            return inner.CreateEntry(key);
+        }
+
+        public void Remove(object key) => inner.Remove(key);
+
+        public bool TryGetValue(object key, out object? value) => inner.TryGetValue(key, out value);
+
+        public void Dispose() => inner.Dispose();
     }
 }

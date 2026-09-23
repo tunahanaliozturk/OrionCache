@@ -10,6 +10,11 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Fixed
 
+- **A completed explicit write is no longer overwritten by a factory already entering its final
+  cache write.** With single-flight enabled, `SetAsync` and `RemoveAsync` now coordinate with that
+  flight's registration, removal, and final write under a short stable mutation gate. This closes
+  both the gap between the prior invalidation check and the cache write and the flight-turnover race
+  where a mutation could lock a defunct flight while a replacement flight started.
 - **An expired read no longer removes a concurrent replacement.** The read path used to remove by
   key after inspecting an expired item, which could delete a fresh value written between those steps.
   Logical expiration still reports a miss; the backing cache handles physical eviction.
@@ -28,8 +33,7 @@ All notable changes to OrionCache are documented in this file. The format is bas
 - **`SetAsync` / `RemoveAsync` are no longer undone by a factory already in flight.** An invalidation
   issued during a slow factory was silently overwritten when that factory completed, so a removed key
   came back with no way for the caller to tell. The invalidation now marks the flight and the produced
-  value is not written over the newer one. (A factory already inside its write can still win that
-  race; closing it fully needs per-key versioning.)
+  value is not written over the newer one.
 - **A key read under the wrong type is a miss, not a crash.** `TryGetAsync<int>` on a key stored as a
   string threw `InvalidCastException` out of a method whose contract is that it does not. It now
   behaves like `IMemoryCache.TryGetValue<T>` and reports a miss.
@@ -43,6 +47,9 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Changed
 
+- Concurrent `GetOrCreateAsync` calls for the same key with different result types now throw
+  `InvalidOperationException` instead of starting an untracked producer that could overwrite an
+  explicit write. **Breaking** for callers using one key for multiple value types concurrently.
 - `OrionCacheOptions.StampedeStripeCount` is now the concurrency level of the in-flight table rather
   than a count of lock stripes. Single-flight is per key at any setting, so unrelated keys never wait
   on each other.
