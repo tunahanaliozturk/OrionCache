@@ -67,7 +67,8 @@ jobs:
   publish:
     needs: [build-and-test, aot-smoke]
     runs-on: ubuntu-latest
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    # Manual CI runs must never publish a package. Only a published GitHub release may do that.
+    if: github.event_name == 'release' && github.event.action == 'published'
     permissions:
       packages: write
       contents: read
