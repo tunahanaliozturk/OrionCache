@@ -31,10 +31,9 @@ using Moongazing.OrionResult;
 /// (value, exception, cancellation), so the table holds only the keys actually in flight.
 /// </para>
 /// <para>
-/// A <see cref="SetAsync"/> or <see cref="RemoveAsync"/> that lands while a factory is in flight marks
-/// that flight: its callers still get the value it produced, but it is not written over the newer one.
-/// The mark is not a lock - a factory already inside its write can still win that race - but an
-/// invalidation is no longer routinely undone by a factory that started before it.
+/// With single-flight enabled, a <see cref="SetAsync"/> or <see cref="RemoveAsync"/> that lands while
+/// a factory is registered coordinates with that flight's final cache write. Its callers still get
+/// the value the factory produced, but it cannot restore an entry after a completed mutation.
 /// </para>
 /// </summary>
 public sealed class MemoryOrionCache : IOrionCache, IDisposable
@@ -102,9 +101,9 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
 
             if (claimed is not Flight<T> winner)
             {
-                // The same key is in flight for a different value type, so there is no result to share.
-                // Produce our own rather than casting blind or blocking on an unrelated flight.
-                return await ProduceAsync(key, factory, options, flight: null, cancellationToken).ConfigureAwait(false);
+                // Two concurrent producers with different types cannot share one result or cache slot.
+                // An untracked second producer could also overwrite a completed Set or Remove.
+                throw new InvalidOperationException("A cache key cannot be used concurrently with different value types.");
             }
 
             try
@@ -139,8 +138,18 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         options?.Validate();
-        InvalidateInFlight(key);
-        SetInternal(key, value, options);
+        if (flights.TryGetValue(key, out var flight))
+        {
+            lock (flight)
+            {
+                flight.Invalidated = true;
+                SetInternal(key, value, options);
+            }
+        }
+        else
+        {
+            SetInternal(key, value, options);
+        }
         return default;
     }
 
@@ -148,8 +157,18 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     public ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
-        InvalidateInFlight(key);
-        cache.Remove(key);
+        if (flights.TryGetValue(key, out var flight))
+        {
+            lock (flight)
+            {
+                flight.Invalidated = true;
+                cache.Remove(key);
+            }
+        }
+        else
+        {
+            cache.Remove(key);
+        }
         return default;
     }
 
@@ -195,19 +214,21 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         diagnostics.RecordMiss();
         diagnostics.RecordFactoryRun(); // the invocation, not its outcome: a factory that throws still hit the backing store
         var value = await factory(cancellationToken).ConfigureAwait(false);
-        if (flight is null || !flight.Invalidated)
+        if (flight is null)
         {
             SetInternal(key, value, options);
         }
-        return value;
-    }
-
-    private void InvalidateInFlight(string key)
-    {
-        if (flights.TryGetValue(key, out var flight))
+        else
         {
-            flight.Invalidated = true;
+            lock (flight)
+            {
+                if (!flight.Invalidated)
+                {
+                    SetInternal(key, value, options);
+                }
+            }
         }
+        return value;
     }
 
     private bool TryGetLive<T>(string key, out T value)
@@ -293,14 +314,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     /// <summary>One in-flight factory. The non-generic base carries what callers of any type need.</summary>
     private abstract class Flight
     {
-        private volatile bool invalidated;
-
         /// <summary>Set when a Set or Remove landed mid-flight: the produced value must not be written.</summary>
-        public bool Invalidated
-        {
-            get => invalidated;
-            set => invalidated = value;
-        }
+        public bool Invalidated { get; set; }
     }
 
     private sealed class Flight<T> : Flight
