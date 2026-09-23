@@ -48,6 +48,22 @@ public sealed class CacheSemanticsTests
         Assert.True((await cache.TryGetAsync<int>("k")).IsNone, "sliding access pushed the entry past its absolute cap");
     }
 
+    [Fact]
+    public async Task A_sliding_hit_keeps_the_backing_entry_alive_past_its_first_window()
+    {
+        var clock = new FakeOrionClock();
+        using var cache = TestCache.Create(clock);
+        await cache.SetAsync("k", 7, new CacheEntryOptions { SlidingExpiration = TimeSpan.FromMinutes(5) });
+
+        clock.Advance(TimeSpan.FromMinutes(4));
+        Assert.True((await cache.TryGetAsync<int>("k")).IsSome);
+
+        clock.Advance(TimeSpan.FromMinutes(2)); // beyond the first five-minute physical expiry
+        var live = await cache.TryGetAsync<int>("k");
+        Assert.True(live.IsSome, "the backing cache evicted an entry that was renewed at minute four");
+        Assert.Equal(7, live.Value);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-1)]
