@@ -4,7 +4,7 @@ using System;
 
 /// <summary>
 /// Cache-wide configuration: the default entry lifetime, whether single-flight stampede protection is
-/// on, and how many lock stripes coordinate it.
+/// on, and how many short mutation gates coordinate it.
 /// </summary>
 public sealed class OrionCacheOptions
 {
@@ -18,9 +18,10 @@ public sealed class OrionCacheOptions
     public bool EnableStampedeProtection { get; set; } = true;
 
     /// <summary>
-    /// The concurrency level of the table that tracks in-flight factories - how many threads may claim
-    /// or release a key at once. Single-flight itself is per key: unrelated keys never wait on each
-    /// other whatever this is set to. Must be positive; defaults to 256.
+    /// The concurrency level of the table that tracks in-flight factories and the number of short
+    /// mutation gates. Single-flight is per key: unrelated factories never wait for one another's
+    /// completion. Keys sharing a gate may wait briefly for registration or cache writes.
+    /// Must be positive; defaults to 256.
     /// </summary>
     public int StampedeStripeCount { get; set; } = 256;
 

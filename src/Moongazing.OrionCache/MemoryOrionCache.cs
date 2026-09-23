@@ -31,9 +31,9 @@ using Moongazing.OrionResult;
 /// (value, exception, cancellation), so the table holds only the keys actually in flight.
 /// </para>
 /// <para>
-/// With single-flight enabled, a <see cref="SetAsync"/> or <see cref="RemoveAsync"/> that lands while
-/// a factory is registered coordinates with that flight's final cache write. Its callers still get
-/// the value the factory produced, but it cannot restore an entry after a completed mutation.
+/// With single-flight enabled, flight registration, completion, explicit mutations, and final cache
+/// writes share short striped critical sections. A factory does not restore an entry after a
+/// completed mutation; a colliding key may wait briefly for a write, never for a factory await.
 /// </para>
 /// </summary>
 public sealed class MemoryOrionCache : IOrionCache, IDisposable
@@ -44,6 +44,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     private readonly TimeSpan defaultExpiration;
     private readonly bool stampedeEnabled;
     private readonly ConcurrentDictionary<string, Flight> flights;
+    private readonly object[] mutationGates;
 
     /// <summary>Create the cache.</summary>
     /// <param name="cache">The backing memory cache (storage + pressure eviction).</param>
@@ -65,6 +66,11 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         defaultExpiration = value.DefaultExpiration;
         stampedeEnabled = value.EnableStampedeProtection;
         flights = new ConcurrentDictionary<string, Flight>(value.StampedeStripeCount, 31, StringComparer.Ordinal);
+        mutationGates = new object[value.StampedeStripeCount];
+        for (var i = 0; i < mutationGates.Length; i++)
+        {
+            mutationGates[i] = new object();
+        }
     }
 
     /// <summary>The number of factories currently in flight. Test hook: this must fall back to zero.</summary>
@@ -93,7 +99,11 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
 
             var mine = new Flight<T>();
-            var claimed = flights.GetOrAdd(key, mine);
+            Flight claimed;
+            lock (MutationGate(key))
+            {
+                claimed = flights.GetOrAdd(key, mine);
+            }
             if (ReferenceEquals(claimed, mine))
             {
                 return await RunFlightAsync(key, factory, options, mine, cancellationToken).ConfigureAwait(false);
@@ -138,17 +148,20 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
         options?.Validate();
-        if (flights.TryGetValue(key, out var flight))
+        if (!stampedeEnabled)
         {
-            lock (flight)
-            {
-                flight.Invalidated = true;
-                SetInternal(key, value, options);
-            }
+            SetInternal(key, value, options);
         }
         else
         {
-            SetInternal(key, value, options);
+            lock (MutationGate(key))
+            {
+                if (flights.TryGetValue(key, out var flight))
+                {
+                    flight.Invalidated = true;
+                }
+                SetInternal(key, value, options);
+            }
         }
         return default;
     }
@@ -157,17 +170,20 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
     public ValueTask RemoveAsync(string key, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(key);
-        if (flights.TryGetValue(key, out var flight))
+        if (!stampedeEnabled)
         {
-            lock (flight)
-            {
-                flight.Invalidated = true;
-                cache.Remove(key);
-            }
+            cache.Remove(key);
         }
         else
         {
-            cache.Remove(key);
+            lock (MutationGate(key))
+            {
+                if (flights.TryGetValue(key, out var flight))
+                {
+                    flight.Invalidated = true;
+                }
+                cache.Remove(key);
+            }
         }
         return default;
     }
@@ -205,7 +221,10 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
         finally
         {
-            flights.TryRemove(new KeyValuePair<string, Flight>(key, flight));
+            lock (MutationGate(key))
+            {
+                flights.TryRemove(new KeyValuePair<string, Flight>(key, flight));
+            }
         }
     }
 
@@ -220,7 +239,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
         else
         {
-            lock (flight)
+            lock (MutationGate(key))
             {
                 if (!flight.Invalidated)
                 {
@@ -230,6 +249,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         }
         return value;
     }
+
+    private object MutationGate(string key) => mutationGates[(StringComparer.Ordinal.GetHashCode(key) & int.MaxValue) % mutationGates.Length];
 
     private bool TryGetLive<T>(string key, out T value)
     {

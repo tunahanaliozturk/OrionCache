@@ -12,8 +12,9 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 - **A completed explicit write is no longer overwritten by a factory already entering its final
   cache write.** With single-flight enabled, `SetAsync` and `RemoveAsync` now coordinate with that
-  flight's final write under the same per-flight lock. This closes the gap between the prior
-  invalidation check and the actual cache write.
+  flight's registration, removal, and final write under a short stable mutation gate. This closes
+  both the gap between the prior invalidation check and the cache write and the flight-turnover race
+  where a mutation could lock a defunct flight while a replacement flight started.
 - **An expired read no longer removes a concurrent replacement.** The read path used to remove by
   key after inspecting an expired item, which could delete a fresh value written between those steps.
   Logical expiration still reports a miss; the backing cache handles physical eviction.
