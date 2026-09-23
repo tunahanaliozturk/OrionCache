@@ -221,7 +221,8 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         var now = clock.UtcNow;
         if (now.UtcTicks >= item.ExpiresAtUtcTicks)
         {
-            cache.Remove(key); // logically expired; drop it and report a miss
+            // Removing by key could delete a newer value written after this read retrieved item.
+            // The backing cache owns physical eviction; the logical check keeps this value hidden.
             return false;
         }
 

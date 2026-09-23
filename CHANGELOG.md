@@ -10,6 +10,9 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Fixed
 
+- **An expired read no longer removes a concurrent replacement.** The read path used to remove by
+  key after inspecting an expired item, which could delete a fresh value written between those steps.
+  Logical expiration still reports a miss; the backing cache handles physical eviction.
 - **Sliding entries now survive activity beyond their first TTL window.** The backing memory cache
   used a fixed absolute expiry even when the logical clock renewed a sliding entry. It now uses a
   sliding eviction window, with an absolute backstop only when an explicit hard cap is configured.

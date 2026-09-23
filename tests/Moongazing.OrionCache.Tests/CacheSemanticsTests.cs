@@ -2,7 +2,11 @@ namespace Moongazing.OrionCache.Tests;
 
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
 
 using Moongazing.OrionCache.Diagnostics;
 using Moongazing.OrionClock.Testing;
@@ -94,6 +98,24 @@ public sealed class CacheSemanticsTests
     }
 
     [Fact]
+    public async Task An_expired_read_does_not_remove_a_replacement_written_during_the_read()
+    {
+        var clock = new FakeOrionClock();
+        using var storage = new InterleavingMemoryCache();
+        using var diagnostics = new CacheDiagnostics();
+        using var cache = new MemoryOrionCache(storage, clock, diagnostics, Options.Create(new OrionCacheOptions()));
+        await cache.SetAsync("k", 1);
+        clock.Advance(TimeSpan.FromMinutes(6)); // logically expired; backing store still has the old item
+
+        storage.InterleaveOnce(() => cache.SetAsync("k", 99).AsTask().GetAwaiter().GetResult());
+        Assert.True((await cache.TryGetAsync<int>("k")).IsNone); // the read observed the old item
+
+        var replacement = await cache.TryGetAsync<int>("k");
+        Assert.True(replacement.IsSome, "the expired reader removed a newer write");
+        Assert.Equal(99, replacement.Value);
+    }
+
+    [Fact]
     public async Task A_stampede_reports_one_factory_run_and_a_wait_for_every_saved_caller()
     {
         var clock = new FakeOrionClock();
@@ -129,5 +151,26 @@ public sealed class CacheSemanticsTests
         Assert.Equal(1, probe[diagnostics.Misses]);
         Assert.Equal(0, probe[diagnostics.Hits]);
         Assert.Equal(1, probe[diagnostics.FactoryRuns]);
+    }
+
+    private sealed class InterleavingMemoryCache : IMemoryCache
+    {
+        private readonly MemoryCache inner = new(new MemoryCacheOptions());
+        private Action? afterRead;
+
+        public void InterleaveOnce(Action callback) => afterRead = callback;
+
+        public ICacheEntry CreateEntry(object key) => inner.CreateEntry(key);
+
+        public void Remove(object key) => inner.Remove(key);
+
+        public bool TryGetValue(object key, out object? value)
+        {
+            var found = inner.TryGetValue(key, out value);
+            Interlocked.Exchange(ref afterRead, null)?.Invoke();
+            return found;
+        }
+
+        public void Dispose() => inner.Dispose();
     }
 }
