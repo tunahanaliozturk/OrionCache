@@ -47,6 +47,8 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Changed
 
+- Updated Microsoft.Extensions cache/DI/options references to 10.0.12 while retaining net8.0,
+  net9.0, and net10.0 targets. Test SDK, xUnit, and its runner use current stable releases.
 - Concurrent `GetOrCreateAsync` calls for the same key with different result types now throw
   `InvalidOperationException` instead of starting an untracked producer that could overwrite an
   explicit write. **Breaking** for callers using one key for multiple value types concurrently.
