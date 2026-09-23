@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Internal;
 using Microsoft.Extensions.Options;
 
 using Moongazing.OrionCache.Diagnostics;
@@ -22,10 +23,15 @@ internal static class TestCache
         var options = new OrionCacheOptions();
         configure?.Invoke(options);
         return new MemoryOrionCache(
-            new MemoryCache(new MemoryCacheOptions()),
+            new MemoryCache(new MemoryCacheOptions { Clock = new CacheClock(clock) }),
             clock,
             diagnostics ?? new CacheDiagnostics(),
             Options.Create(options));
+    }
+
+    private sealed class CacheClock(FakeOrionClock clock) : ISystemClock
+    {
+        public DateTimeOffset UtcNow => clock.UtcNow;
     }
 
     /// <summary>

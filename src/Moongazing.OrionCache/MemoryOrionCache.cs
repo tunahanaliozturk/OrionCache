@@ -253,7 +253,7 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
         var sliding = options?.SlidingExpiration;
         DateTimeOffset expiresAt;
         DateTimeOffset? hardCap = null;
-        TimeSpan backstop;
+        TimeSpan? absoluteBackstop;
 
         if (sliding is { } s)
         {
@@ -261,24 +261,30 @@ public sealed class MemoryOrionCache : IOrionCache, IDisposable
             hardCap = options?.Expiration is { } ex ? now + ex : null;
             var slid = now + s;
             expiresAt = hardCap is { } cap && slid > cap ? cap : slid;
-            backstop = hardCap is { } c ? c - now : s;
+            absoluteBackstop = options?.Expiration;
         }
         else
         {
             var ttl = options?.Expiration ?? defaultExpiration;
             expiresAt = now + ttl;
-            backstop = ttl;
+            absoluteBackstop = ttl;
         }
 
-        var item = new CacheItem { Value = value, Sliding = sliding, HardExpiresAtUtc = hardCap };
-        item.ExpiresAtUtcTicks = expiresAt.UtcTicks;
+        var item = new CacheItem
+        {
+            Value = value,
+            Sliding = sliding,
+            HardExpiresAtUtc = hardCap,
+            ExpiresAtUtcTicks = expiresAt.UtcTicks,
+        };
 
-        // Real-time backstop so entries still evict under a real clock in production; the logical
-        // OrionClock check on read is authoritative (a fake clock never returns a stale hit).
+        // Match the backing cache's eviction policy to the logical one. A fixed absolute timeout
+        // here would evict a sliding entry at its original deadline despite later hits.
         var entryOptions = new MemoryCacheEntryOptions
         {
             Size = 1,
-            AbsoluteExpirationRelativeToNow = backstop > TimeSpan.Zero ? backstop : defaultExpiration,
+            SlidingExpiration = sliding,
+            AbsoluteExpirationRelativeToNow = absoluteBackstop,
         };
         cache.Set(key, item, entryOptions);
     }

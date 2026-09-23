@@ -10,6 +10,9 @@ All notable changes to OrionCache are documented in this file. The format is bas
 
 ### Fixed
 
+- **Sliding entries now survive activity beyond their first TTL window.** The backing memory cache
+  used a fixed absolute expiry even when the logical clock renewed a sliding entry. It now uses a
+  sliding eviction window, with an absolute backstop only when an explicit hard cap is configured.
 - **Single-flight is now per key, not per lock stripe.** `GetOrCreateAsync` held one of 256 striped
   semaphores across the whole factory await, so an unrelated key that shared a stripe blocked for the
   full duration of another factory, and waiters were only allowed to re-read the cache rather than
