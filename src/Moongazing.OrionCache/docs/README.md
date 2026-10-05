@@ -64,7 +64,7 @@ Invalidation is local to one cache instance. A value from a factory that was in 
 
 ## Telemetry and AOT
 
-- Meter `Moongazing.OrionCache` with counters `orion.cache.hits`, `orion.cache.misses`, `orion.cache.factory_runs` and `orion.cache.stampede_waits`.
+- Meter `Moongazing.OrionCache` with counters `orion.cache.hits`, `orion.cache.misses`, `orion.cache.factory_runs` and `orion.cache.stampede_waits`. The caller that runs the factory records a miss and a factory run; a single-flight waiter served the winner's value records a hit and a stampede wait.
 - AOT- and trim-compatible (`IsAotCompatible`); CI publishes a NativeAOT smoke test.
 
 ## Related packages

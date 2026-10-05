@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="930" viewBox="0 0 1200 930">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="950" viewBox="0 0 1200 950">
   <!--
     Orion family diagram template. Copy it, keep <defs> and <style>, replace the body.
     Classes: .step (our code) .ext (backend / external system) .ok (success end) .fail (failure path)
@@ -35,7 +35,7 @@
     .badge-text { font-size: 12px; font-weight: 700; fill: #ffffff; }
   </style>
 
-  <rect width="1200" height="930" fill="#ffffff"/>
+  <rect width="1200" height="950" fill="#ffffff"/>
 
   <text class="title" x="40" y="52">OrionCache - GetOrCreateAsync with single-flight</text>
   <text class="subtitle" x="40" y="78">Concurrent misses for one key share one factory run; a failure reaches every caller and nothing is cached.</text>
@@ -83,7 +83,7 @@
   <text class="edge" x="584" y="440" text-anchor="middle">yes</text>
   <rect class="step" x="620" y="415" width="260" height="70" rx="14"/>
   <text class="label" x="750" y="445" text-anchor="middle">Await the winner</text>
-  <text class="small" x="750" y="467" text-anchor="middle">orion.cache.stampede_waits</text>
+  <text class="small" x="750" y="467" text-anchor="middle">orion.cache.hits + stampede_waits</text>
 
   <path class="flow back" d="M880,450 L1050,450 L1050,683"/>
   <text class="edge" x="965" y="440" text-anchor="middle">served its value</text>
@@ -128,8 +128,9 @@
   <text class="small" x="440" y="889" text-anchor="middle">the next caller retries</text>
 
   <!-- note -->
-  <rect class="note" x="620" y="820" width="540" height="80" rx="10"/>
+  <rect class="note" x="620" y="820" width="540" height="100" rx="10"/>
   <text class="small" x="640" y="846">Single-flight is per key: other keys never wait for this factory.</text>
   <text class="small" x="640" y="866">Same key, different T while in flight: InvalidOperationException.</text>
-  <text class="small" x="640" y="886">Every miss counts orion.cache.misses and orion.cache.factory_runs.</text>
+  <text class="small" x="640" y="886">Running the factory counts orion.cache.misses and orion.cache.factory_runs;</text>
+  <text class="small" x="640" y="906">a waiter served by the winner counts orion.cache.hits + stampede_waits.</text>
 </svg>
