@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+  <!--
+    Orion family diagram template. Copy it, keep <defs> and <style>, replace the body.
+    Classes: .step (our code) .ext (backend / external system) .ok (success end) .fail (failure path)
+             .decision (diamond) .note (side remark) .lane (sequence lifeline)
+    Arrows: class="flow" (main path), "flow alt" (alternate / failure path, dashed), "flow back" (response).
+  -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif; fill: #1e1b4b; }
+    .title { font-size: 24px; font-weight: 700; }
+    .subtitle { font-size: 14px; fill: #475569; }
+    .label { font-size: 15px; font-weight: 600; }
+    .small { font-size: 12.5px; fill: #475569; }
+    .code { font-family: "Cascadia Code", Consolas, "SF Mono", monospace; font-size: 13px; fill: #3730a3; }
+    .edge { font-size: 12.5px; fill: #334155; }
+    .step { fill: #eef2ff; stroke: #4f46e5; stroke-width: 2; }
+    .ext { fill: #f0f9ff; stroke: #0284c7; stroke-width: 2; }
+    .ok { fill: #ecfdf5; stroke: #059669; stroke-width: 2; }
+    .fail { fill: #fef2f2; stroke: #dc2626; stroke-width: 2; }
+    .decision { fill: #fffbeb; stroke: #d97706; stroke-width: 2; }
+    .note { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .lane { stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 6 5; }
+    .flow { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow); }
+    .flow.alt { stroke: #dc2626; stroke-dasharray: 6 4; marker-end: url(#arrow-fail); }
+    .flow.back { stroke-dasharray: 6 4; }
+    .badge { fill: #4f46e5; }
+    .badge-text { font-size: 12px; font-weight: 700; fill: #ffffff; }
+  </style>
+
+  <rect width="1200" height="500" fill="#ffffff"/>
+
+  <text class="title" x="40" y="52">OrionCache - package and how the app reaches it</text>
+  <text class="subtitle" x="40" y="78">One package: AddOrionCache registers an in-memory cache-aside cache built on IMemoryCache, OrionClock and OrionResult.</text>
+
+  <!-- app -->
+  <rect class="step" x="40" y="120" width="250" height="116" rx="14"/>
+  <text class="label" x="165" y="160" text-anchor="middle">Your app</text>
+  <text class="small" x="165" y="184" text-anchor="middle">injects IOrionCache, or</text>
+  <text class="small" x="165" y="204" text-anchor="middle">ITaggedOrionCache for tags</text>
+
+  <path class="flow" d="M290,178 L338,178"/>
+
+  <!-- registration -->
+  <rect class="step" x="340" y="120" width="380" height="116" rx="14"/>
+  <text class="code" x="530" y="154" text-anchor="middle" style="font-variant-ligatures: none">services.AddOrionCache(o =&gt; ...)</text>
+  <text class="small" x="530" y="180" text-anchor="middle">TryAdd singletons: an earlier registration wins</text>
+  <text class="small" x="530" y="204" text-anchor="middle">OrionCacheOptions: DefaultExpiration 5 min,</text>
+  <text class="small" x="530" y="222" text-anchor="middle">EnableStampedeProtection true, StampedeStripeCount 256</text>
+
+  <path class="flow" d="M720,178 L778,178"/>
+  <text class="edge" x="749" y="168" text-anchor="middle">adds</text>
+
+  <!-- implementation -->
+  <rect class="step" x="780" y="120" width="390" height="116" rx="14"/>
+  <text class="label" x="975" y="158" text-anchor="middle">MemoryOrionCache</text>
+  <text class="small" x="975" y="182" text-anchor="middle">implements ITaggedOrionCache : IOrionCache</text>
+  <text class="small" x="975" y="204" text-anchor="middle">per-key single-flight, logical expiry, tags</text>
+
+  <!-- bus -->
+  <path class="flow" style="marker-end: none" d="M975,236 L975,262 M170,262 L1040,262"/>
+  <text class="edge" x="987" y="254">uses</text>
+  <path class="flow" d="M170,262 L170,298"/>
+  <path class="flow" d="M460,262 L460,298"/>
+  <path class="flow" d="M750,262 L750,298"/>
+  <path class="flow" d="M1040,262 L1040,298"/>
+
+  <!-- dependencies -->
+  <rect class="ext" x="40" y="300" width="260" height="90" rx="14"/>
+  <text class="code" x="170" y="332" text-anchor="middle">IMemoryCache</text>
+  <text class="small" x="170" y="355" text-anchor="middle">Microsoft.Extensions.Caching.Memory</text>
+  <text class="small" x="170" y="375" text-anchor="middle">storage and eviction</text>
+
+  <rect class="ext" x="330" y="300" width="260" height="90" rx="14"/>
+  <text class="code" x="460" y="332" text-anchor="middle">IOrionClock</text>
+  <text class="small" x="460" y="355" text-anchor="middle">OrionClock, via AddOrionClock</text>
+  <text class="small" x="460" y="375" text-anchor="middle">every TTL is measured on it</text>
+
+  <rect class="step" x="620" y="300" width="260" height="90" rx="14"/>
+  <text class="code" x="750" y="332" text-anchor="middle">CacheDiagnostics</text>
+  <text class="small" x="750" y="355" text-anchor="middle">meter Moongazing.OrionCache</text>
+  <text class="small" x="750" y="375" text-anchor="middle">hits, misses, factory_runs, stampede_waits</text>
+
+  <rect class="ext" x="910" y="300" width="260" height="90" rx="14"/>
+  <text class="code" x="1040" y="332" text-anchor="middle">Option&lt;T&gt;</text>
+  <text class="small" x="1040" y="355" text-anchor="middle">OrionResult</text>
+  <text class="small" x="1040" y="375" text-anchor="middle">what TryGetAsync returns</text>
+
+  <!-- note -->
+  <rect class="note" x="40" y="420" width="1130" height="50" rx="10"/>
+  <text class="small" x="60" y="450">Tests: construct MemoryOrionCache with a FakeOrionClock (package OrionClock.Testing) and call Advance; entries expire with no real waiting.</text>
+</svg>

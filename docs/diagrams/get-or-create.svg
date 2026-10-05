@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="930" viewBox="0 0 1200 930">
+  <!--
+    Orion family diagram template. Copy it, keep <defs> and <style>, replace the body.
+    Classes: .step (our code) .ext (backend / external system) .ok (success end) .fail (failure path)
+             .decision (diamond) .note (side remark) .lane (sequence lifeline)
+    Arrows: class="flow" (main path), "flow alt" (alternate / failure path, dashed), "flow back" (response).
+  -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrow-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: "Segoe UI", Inter, "Helvetica Neue", Arial, sans-serif; fill: #1e1b4b; }
+    .title { font-size: 24px; font-weight: 700; }
+    .subtitle { font-size: 14px; fill: #475569; }
+    .label { font-size: 15px; font-weight: 600; }
+    .small { font-size: 12.5px; fill: #475569; }
+    .code { font-family: "Cascadia Code", Consolas, "SF Mono", monospace; font-size: 13px; fill: #3730a3; }
+    .edge { font-size: 12.5px; fill: #334155; }
+    .step { fill: #eef2ff; stroke: #4f46e5; stroke-width: 2; }
+    .ext { fill: #f0f9ff; stroke: #0284c7; stroke-width: 2; }
+    .ok { fill: #ecfdf5; stroke: #059669; stroke-width: 2; }
+    .fail { fill: #fef2f2; stroke: #dc2626; stroke-width: 2; }
+    .decision { fill: #fffbeb; stroke: #d97706; stroke-width: 2; }
+    .note { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 4 3; }
+    .lane { stroke: #cbd5e1; stroke-width: 1.5; stroke-dasharray: 6 5; }
+    .flow { fill: none; stroke: #64748b; stroke-width: 2; marker-end: url(#arrow); }
+    .flow.alt { stroke: #dc2626; stroke-dasharray: 6 4; marker-end: url(#arrow-fail); }
+    .flow.back { stroke-dasharray: 6 4; }
+    .badge { fill: #4f46e5; }
+    .badge-text { font-size: 12px; font-weight: 700; fill: #ffffff; }
+  </style>
+
+  <rect width="1200" height="930" fill="#ffffff"/>
+
+  <text class="title" x="40" y="52">OrionCache - GetOrCreateAsync with single-flight</text>
+  <text class="subtitle" x="40" y="78">Concurrent misses for one key share one factory run; a failure reaches every caller and nothing is cached.</text>
+
+  <!-- start -->
+  <rect class="step" x="40" y="115" width="240" height="70" rx="14"/>
+  <text class="code" x="160" y="146" text-anchor="middle">GetOrCreateAsync(</text>
+  <text class="code" x="160" y="166" text-anchor="middle">key, factory, options)</text>
+
+  <path class="flow" d="M280,150 L328,150"/>
+
+  <!-- D1: live entry -->
+  <polygon class="decision" points="440,95 550,150 440,205 330,150"/>
+  <text class="label" x="440" y="146" text-anchor="middle">Live entry?</text>
+  <text class="small" x="440" y="166" text-anchor="middle">TTL and tags</text>
+
+  <path class="flow" d="M550,150 L618,150"/>
+  <text class="edge" x="584" y="140" text-anchor="middle">yes</text>
+  <rect class="ok" x="620" y="115" width="260" height="70" rx="14"/>
+  <text class="label" x="750" y="146" text-anchor="middle">Return cached value</text>
+  <text class="small" x="750" y="168" text-anchor="middle">orion.cache.hits</text>
+
+  <!-- D2: stampede protection -->
+  <path class="flow" d="M440,205 L440,243"/>
+  <text class="edge" x="452" y="229">no</text>
+  <polygon class="decision" points="440,245 550,300 440,355 330,300"/>
+  <text class="code" x="440" y="296" text-anchor="middle">EnableStampede</text>
+  <text class="code" x="440" y="314" text-anchor="middle">Protection?</text>
+
+  <path class="flow" d="M330,300 L282,300"/>
+  <text class="edge" x="306" y="290" text-anchor="middle">false</text>
+  <rect class="step" x="40" y="265" width="240" height="70" rx="14"/>
+  <text class="label" x="160" y="295" text-anchor="middle">Caller runs factory</text>
+  <text class="small" x="160" y="317" text-anchor="middle">every concurrent miss runs it</text>
+
+  <!-- D3: flight registered -->
+  <path class="flow" d="M440,355 L440,393"/>
+  <text class="edge" x="452" y="379">true</text>
+  <polygon class="decision" points="440,395 550,450 440,505 330,450"/>
+  <text class="label" x="440" y="446" text-anchor="middle">Key already</text>
+  <text class="label" x="440" y="466" text-anchor="middle">in flight?</text>
+
+  <!-- waiter -->
+  <path class="flow" d="M550,450 L618,450"/>
+  <text class="edge" x="584" y="440" text-anchor="middle">yes</text>
+  <rect class="step" x="620" y="415" width="260" height="70" rx="14"/>
+  <text class="label" x="750" y="445" text-anchor="middle">Await the winner</text>
+  <text class="small" x="750" y="467" text-anchor="middle">orion.cache.stampede_waits</text>
+
+  <path class="flow back" d="M880,450 L1050,450 L1050,683"/>
+  <text class="edge" x="965" y="440" text-anchor="middle">served its value</text>
+
+  <!-- winner canceled: re-elect -->
+  <path class="flow alt" d="M750,485 L750,585 L562,585"/>
+  <text class="edge" x="762" y="530">winner canceled by</text>
+  <text class="edge" x="762" y="547">its own token:</text>
+  <text class="edge" x="762" y="564">claim a new flight</text>
+
+  <!-- claim -->
+  <path class="flow" d="M440,505 L440,548"/>
+  <text class="edge" x="452" y="531">no</text>
+  <rect class="step" x="320" y="550" width="240" height="70" rx="14"/>
+  <text class="label" x="440" y="580" text-anchor="middle">Claim the flight</text>
+  <text class="small" x="440" y="602" text-anchor="middle">re-check cache, run factory once</text>
+
+  <!-- D4: factory outcome -->
+  <path class="flow" d="M440,620 L440,663"/>
+  <polygon class="decision" points="440,665 550,720 440,775 330,720"/>
+  <text class="label" x="440" y="716" text-anchor="middle">Factory</text>
+  <text class="label" x="440" y="736" text-anchor="middle">throws?</text>
+
+  <path class="flow" d="M550,720 L618,720"/>
+  <text class="edge" x="584" y="710" text-anchor="middle">no</text>
+  <rect class="step" x="620" y="680" width="260" height="82" rx="14"/>
+  <text class="label" x="750" y="708" text-anchor="middle">Write the entry</text>
+  <text class="small" x="750" y="730" text-anchor="middle">skipped if SetAsync, RemoveAsync</text>
+  <text class="small" x="750" y="748" text-anchor="middle">or a tag invalidation came first</text>
+
+  <path class="flow" d="M880,720 L938,720"/>
+  <rect class="ok" x="940" y="685" width="220" height="70" rx="14"/>
+  <text class="label" x="1050" y="715" text-anchor="middle">Value returned</text>
+  <text class="small" x="1050" y="737" text-anchor="middle">to winner and waiters</text>
+
+  <!-- failure -->
+  <path class="flow alt" d="M440,775 L440,818"/>
+  <text class="edge" x="452" y="801">yes</text>
+  <rect class="fail" x="300" y="820" width="280" height="80" rx="14"/>
+  <text class="label" x="440" y="850" text-anchor="middle">Winner and waiters throw</text>
+  <text class="small" x="440" y="872" text-anchor="middle">nothing cached;</text>
+  <text class="small" x="440" y="889" text-anchor="middle">the next caller retries</text>
+
+  <!-- note -->
+  <rect class="note" x="620" y="820" width="540" height="80" rx="10"/>
+  <text class="small" x="640" y="846">Single-flight is per key: other keys never wait for this factory.</text>
+  <text class="small" x="640" y="866">Same key, different T while in flight: InvalidOperationException.</text>
+  <text class="small" x="640" y="886">Every miss counts orion.cache.misses and orion.cache.factory_runs.</text>
+</svg>

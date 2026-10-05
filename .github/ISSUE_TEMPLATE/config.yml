@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/tunahanaliozturk/OrionCache#readme
+    about: "\"How do I ...\" is usually answered in the README; it documents the real behaviour."
+  - name: Security vulnerability
+    url: https://github.com/tunahanaliozturk/OrionCache/blob/master/SECURITY.md
+    about: Do not file a public issue. Report it privately as described in SECURITY.md.

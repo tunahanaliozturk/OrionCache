@@ -1,15 +1,22 @@
 <p align="center">
-  <img src="docs/logo.png" alt="OrionCache" width="150" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo.png">
+    <img src="docs/icon.png" alt="OrionCache logo" width="150">
+  </picture>
 </p>
 
 # OrionCache
 
 [![CI/CD](https://github.com/tunahanaliozturk/OrionCache/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/tunahanaliozturk/OrionCache/actions/workflows/ci-cd.yml)
 [![NuGet](https://img.shields.io/nuget/v/OrionCache.svg)](https://www.nuget.org/packages/OrionCache/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+![.NET](https://img.shields.io/badge/.NET-8.0%20%7C%209.0%20%7C%2010.0-purple.svg)
 
 **Cache-aside done right.** One `GetOrCreateAsync` that never stampedes — the factory runs exactly once even under a burst of concurrent misses for the same key — with expiration driven by an `OrionClock` `TimeProvider` so it is deterministic in tests, and OpenTelemetry by default.
 
 Every service re-implements the same three-line cache-aside and gets it wrong the same way: a hot key expires, 500 concurrent requests all miss, all hit the database, all recompute the same value. `IMemoryCache` gives you `Get`/`Set` but no coordination — the thundering herd is left as an exercise, and everyone hand-rolls a `SemaphoreSlim`-per-key single-flight (usually with a lock leak or a race). OrionCache absorbs that: the stampede protection and the deterministic clock are the product, not a TODO.
+
+![OrionCache package: the app registers it with AddOrionCache; MemoryOrionCache uses IMemoryCache, IOrionClock, CacheDiagnostics and Option<T>](docs/diagrams/overview.png)
 
 ## Features
 
@@ -25,6 +32,10 @@ Every service re-implements the same three-line cache-aside and gets it wrong th
 ```bash
 dotnet add package OrionCache
 ```
+
+| Package | What it is |
+|---------|------------|
+| `OrionCache` | `IOrionCache`, `ITaggedOrionCache`, `MemoryOrionCache`, `CacheEntryOptions`, `OrionCacheOptions`, `CacheDiagnostics` and `AddOrionCache`. Depends on `Orion.Abstractions`, `OrionClock`, `OrionResult` and `Microsoft.Extensions.Caching.Memory`. |
 
 ## Usage
 
@@ -43,16 +54,18 @@ public sealed class ProductService(IOrionCache cache, AppDb db)
     public Task<Product?> GetAsync(int id, CancellationToken ct) =>
         cache.GetOrCreateAsync(
             key: $"product:{id}",
-            factory: async _ => await db.Products.FindAsync([id], ct),
+            factory: async token => await db.Products.FindAsync([id], token),
             options: new CacheEntryOptions { Expiration = TimeSpan.FromMinutes(10) },
             ct);
 }
 ```
 
+![GetOrCreateAsync: a live entry is returned; on a miss one caller claims the flight and runs the factory, the others await it; a failure reaches every caller and nothing is cached](docs/diagrams/get-or-create.png)
+
 ## Tag invalidation
 
 ```csharp
-var cache = services.GetRequiredService<ITaggedOrionCache>();
+var cache = serviceProvider.GetRequiredService<ITaggedOrionCache>();
 await cache.SetAsync("product:42", product,
     new CacheEntryOptions { Tags = ["catalog", "product:42"] });
 await cache.InvalidateTagAsync("product:42");
@@ -63,11 +76,19 @@ the current cache instance, not other application instances. A factory already i
 its value to its current caller, but its invalidated tagged result will not be served from the cache.
 An existing cached value is not retroactively assigned tags by a later `GetOrCreateAsync` call.
 
+![Entry lifecycle: every read checks the logical expiry on IOrionClock and the entry's tags before returning a value](docs/diagrams/entry-lifecycle.png)
+
 ## Testing — expiration fast-forwards, no real waits
 
-Because TTLs are measured on `OrionClock`, a `FakeOrionClock` advances a whole expiration window instantly and deterministically:
+Because TTLs are measured on `OrionClock`, a `FakeOrionClock` (from the `OrionClock.Testing` package) advances a whole expiration window instantly and deterministically:
 
 ```csharp
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using Moongazing.OrionCache;
+using Moongazing.OrionCache.Diagnostics;
+using Moongazing.OrionClock.Testing;
+
 var clock = new FakeOrionClock();
 var cache = new MemoryOrionCache(new MemoryCache(new MemoryCacheOptions()), clock,
     new CacheDiagnostics(), Options.Create(new OrionCacheOptions()));

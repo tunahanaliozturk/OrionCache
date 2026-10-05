@@ -5,6 +5,7 @@
     <PackageTags>orion;cache;cache-aside;stampede;single-flight;memory;getorcreate;dotnet</PackageTags>
     <RootNamespace>Moongazing.OrionCache</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
+    <PackageReadmeFile>docs/README.md</PackageReadmeFile>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Orion.Abstractions" Version="1.2.0" />
@@ -14,6 +15,9 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.12" />
     <PackageReference Include="Microsoft.Extensions.Primitives" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="docs/README.md" Pack="true" PackagePath="docs/" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Moongazing.OrionCache.Tests" />
