@@ -24,7 +24,7 @@ Every service re-implements the same three-line cache-aside and gets it wrong th
 - **Deterministic expiration on `OrionClock`** — absolute and sliding TTLs are measured on the family clock, so a `FakeOrionClock` expires entries with no real waiting and no flakiness. A stale value is never returned.
 - **Tag invalidation** — group related in-memory entries and expire them together, including entries whose factory was in flight during the invalidation.
 - **`Option<T>` reads** — `TryGetAsync` returns an `Option<T>` from [OrionResult](https://github.com/tunahanaliozturk/OrionResult), not the `(bool, out T)` dance.
-- **OpenTelemetry by default** — a `Moongazing.OrionCache` meter with `orion.cache.hits`, `orion.cache.misses`, `orion.cache.factory_runs`, and `orion.cache.stampede_waits`.
+- **OpenTelemetry by default** — a `Moongazing.OrionCache` meter with `orion.cache.hits`, `orion.cache.misses`, `orion.cache.factory_runs`, and `orion.cache.stampede_waits`. The caller that runs the factory records a miss and a factory run; a single-flight waiter served the winner's value records a hit and a stampede wait.
 - **AOT- and trim-clean**, verified by a native-binary smoke test in CI. Multi-targets `net8.0`, `net9.0`, `net10.0`.
 
 ## Install
